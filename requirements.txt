@@ -1,0 +1,26 @@
+# Core FastAPI Backend
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.8.0
+pydantic-settings>=2.4.0
+python-dotenv>=1.0.1
+
+# AI Orchestration & Reasoning (Box 4 & Box 5 in Architecture)
+langgraph>=0.2.0
+langchain-core>=0.3.0
+google-genai>=1.0.0
+groq>=0.11.0
+ollama>=0.6.0
+
+# Twitter Scraper & Web Collection (Playwright + Twitter API)
+playwright>=1.40.0
+tweepy>=4.14.0
+httpx>=0.27.0
+feedparser>=6.0.11
+beautifulsoup4>=4.12.3
+
+# Utilities & Formatting
+rich>=13.7.0
+pyyaml>=6.0.1
+aiofiles>=24.1.0
+pytest>=8.0.0

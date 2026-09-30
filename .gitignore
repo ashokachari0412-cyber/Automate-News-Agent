@@ -1,0 +1,33 @@
+# Secrets & Session Data
+cookies.json
+userdata/
+.env
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+
+# Generated artifacts & caches
+artifacts/
+*.mp4
+*.webm
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+.DS_Store

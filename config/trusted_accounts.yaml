@@ -1,0 +1,121 @@
+# ==============================================================================
+# Trusted Twitter / X Accounts for AI News Collection
+# ==============================================================================
+accounts:
+  # --------------------------------------------------------------------------
+  # 1. Frontier Companies & AI Labs
+  # --------------------------------------------------------------------------
+  - handle: "OpenAI"
+    name: "OpenAI"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["GPT", "Operator", "o-series", "ChatGPT", "API"]
+    description: "Official releases and research from OpenAI"
+
+  - handle: "AnthropicAI"
+    name: "Anthropic"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["Claude", "Constitutional AI", "Reasoning", "Computer Use"]
+    description: "Makers of Claude and frontier safety/capabilities research"
+
+  - handle: "GoogleAI"
+    name: "Google AI"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["Gemini", "Gemma", "Veo", "Research"]
+    description: "Google's central AI releases and research announcements"
+
+  - handle: "GoogleDeepMind"
+    name: "Google DeepMind"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["Gemini", "Veo", "AlphaFold", "Frontier Research"]
+    description: "Google's premier fundamental AI research lab"
+
+  - handle: "MistralAI"
+    name: "Mistral AI"
+    category: "official_lab"
+    weight: 1.4
+    topics: ["Mistral", "Le Chat", "Codestral", "Pixtral"]
+    description: "Leading European frontier & open weights AI lab"
+
+  - handle: "xai"
+    name: "xAI"
+    category: "official_lab"
+    weight: 1.4
+    topics: ["Grok", "Frontier Models", "Colossus"]
+    description: "Official releases from Elon Musk's xAI team"
+
+  - handle: "huggingface"
+    name: "Hugging Face"
+    category: "official_lab"
+    weight: 1.3
+    topics: ["Open Source AI", "Transformers", "Daily Papers"]
+    description: "The central hub for the open source AI community"
+
+  - handle: "perplexity_ai"
+    name: "Perplexity AI"
+    category: "official_lab"
+    weight: 1.3
+    topics: ["Search", "Reasoning", "Pro Search", "Perplexity Pages"]
+    description: "Pioneering conversational AI search engine"
+
+  - handle: "cursor_ai"
+    name: "Cursor"
+    category: "official_lab"
+    weight: 1.3
+    topics: ["AI Coding", "Developer Tools", "Agentic Code"]
+    description: "Leading AI-native code editor & autonomous coding agent"
+
+  - handle: "CognitionAI"
+    name: "Cognition"
+    category: "official_lab"
+    weight: 1.3
+    topics: ["Devin", "Software Engineering Agents", "Autonomous Coding"]
+    description: "Creators of Devin, the autonomous AI software engineer"
+
+  # --------------------------------------------------------------------------
+  # 2. Key Founders & Pioneers
+  # --------------------------------------------------------------------------
+  - handle: "sama"
+    name: "Sam Altman"
+    category: "pioneer_researcher"
+    weight: 1.5
+    topics: ["OpenAI", "AGI", "Product Launches", "AI Industry"]
+    description: "CEO of OpenAI"
+
+  - handle: "karpathy"
+    name: "Andrej Karpathy"
+    category: "pioneer_researcher"
+    weight: 1.5
+    topics: ["Eureka Labs", "Neural Networks", "LLM Insights", "AI Education"]
+    description: "Former Tesla Director of AI & OpenAI founding member"
+
+  - handle: "ylecun"
+    name: "Yann LeCun"
+    category: "pioneer_researcher"
+    weight: 1.4
+    topics: ["Meta AI", "World Models", "JEPA", "AI Critiques"]
+    description: "Turing Award laureate & Chief AI Scientist at Meta"
+
+  - handle: "AndrewYNg"
+    name: "Andrew Ng"
+    category: "pioneer_researcher"
+    weight: 1.3
+    topics: ["AI Agentic Workflows", "DeepLearning.AI", "Education"]
+    description: "Co-founder of Coursera & deep learning pioneer"
+
+  - handle: "fchollet"
+    name: "François Chollet"
+    category: "pioneer_researcher"
+    weight: 1.4
+    topics: ["Keras", "ARC Prize", "AGI Benchmarks", "Abstractions"]
+    description: "Creator of Keras, ARC Prize founder, and leading AI scientist"
+
+  - handle: "demishassabis"
+    name: "Demis Hassabis"
+    category: "pioneer_researcher"
+    weight: 1.5
+    topics: ["Google DeepMind", "Nobel Prize", "AlphaFold", "Gemini"]
+    description: "CEO and Co-founder of Google DeepMind"
