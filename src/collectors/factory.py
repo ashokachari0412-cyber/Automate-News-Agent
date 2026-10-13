@@ -3,13 +3,13 @@
 import logging
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from config.settings import Settings, TwitterAccountConfig, settings
 from src.collectors.base import BaseCollector
+from src.collectors.authorized_collector import AuthorizedNewsCollector
 from src.collectors.playwright_collector import PlaywrightTwitterCollector
 from src.collectors.twitter_api import TwitterApiCollector
-from src.collectors.twitter_syndication import TwitterSyndicationCollector
 from src.collectors.mock_collector import MockCollector
 from src.models.tweet import RawTweet
 
@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 class AutoFallbackCollector(BaseCollector):
-    """Tries authenticated Playwright or live syndication first; falls back to mock dataset if needed."""
+    """Tries authorized lab feeds first; falls back to mock dataset if needed."""
 
-    def __init__(self, primary: BaseCollector, mock: MockCollector):
-        self.primary = primary
-        self.mock = mock
+    def __init__(self, primary: Optional[BaseCollector] = None, mock: Optional[MockCollector] = None):
+        self.primary = primary or AuthorizedNewsCollector()
+        self.mock = mock or MockCollector()
 
     async def collect(
         self,
@@ -68,32 +68,7 @@ def get_collector(cfg: Settings = settings) -> BaseCollector:
             api_secret=cfg.TWITTER_API_SECRET,
         )
 
-    if mode == "syndication":
-        return TwitterSyndicationCollector()
+    # Primary mode: 100% Authorized Primary Source AI Lab Feeds & Research
+    logger.info("Collector factory: Using AuthorizedNewsCollector (OpenAI, DeepMind, Anthropic, Hugging Face).")
+    return AutoFallbackCollector(primary=AuthorizedNewsCollector(), mock=MockCollector())
 
-    # "auto" mode:
-    # 1. If cookies.json exists, prioritize Playwright authenticated scraper!
-    if os.path.exists(cookies_path):
-        logger.info("Auto mode: cookies.json found. Using Playwright authenticated collector.")
-        pw_collector = PlaywrightTwitterCollector(
-            cookies_path=cookies_path,
-            user_data_dir=str(base_dir / cfg.USER_DATA_DIR),
-            headless=cfg.PLAYWRIGHT_HEADLESS,
-        )
-        return AutoFallbackCollector(primary=pw_collector, mock=MockCollector())
-
-    # 2. If official Twitter API credentials are provided
-    if cfg.TWITTER_BEARER_TOKEN or (cfg.TWITTER_API_KEY and cfg.TWITTER_API_SECRET):
-        logger.info("Auto mode: Twitter API credentials found. Using TwitterApiCollector.")
-        return TwitterApiCollector(
-            bearer_token=cfg.TWITTER_BEARER_TOKEN,
-            api_key=cfg.TWITTER_API_KEY,
-            api_secret=cfg.TWITTER_API_SECRET,
-        )
-
-    # 3. Fallback to syndication + mock
-    logger.info("Auto mode: Using Syndication with Mock fallback.")
-    return AutoFallbackCollector(
-        primary=TwitterSyndicationCollector(),
-        mock=MockCollector()
-    )

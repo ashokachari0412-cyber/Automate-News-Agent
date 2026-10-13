@@ -48,9 +48,11 @@ class TriggerResearchResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Optionally starts Telegram background polling listener on server start."""
-    if _telegram_notifier.is_configured():
-        logger.info("Launching Telegram Bot listener in background task...")
+    if settings.ENABLE_EMBEDDED_BOT and _telegram_notifier.is_configured():
+        logger.info("Launching embedded Telegram Bot listener in background task...")
         asyncio.create_task(bot_service.start_polling())
+    else:
+        logger.info("Embedded Telegram bot disabled (running as dedicated service).")
 
 
 @app.get("/")

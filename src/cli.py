@@ -222,6 +222,9 @@ def main():
     serve_parser.add_argument("--host", default="0.0.0.0", help="Host address")
     serve_parser.add_argument("--port", type=int, default=8000, help="Port number")
 
+    # scheduler command
+    subparsers.add_parser("scheduler", help="Run autonomous periodic news pipeline scheduler")
+
     args = parser.parse_args()
 
     if args.command == "accounts":
@@ -230,6 +233,9 @@ def main():
         asyncio.run(test_collector_cmd())
     elif args.command == "bot":
         start_bot_listener()
+    elif args.command == "scheduler":
+        from src.scheduler import main as run_scheduler
+        asyncio.run(run_scheduler())
     elif args.command == "serve":
         import uvicorn
         uvicorn.run("src.api.main:app", host=args.host, port=args.port, reload=True)

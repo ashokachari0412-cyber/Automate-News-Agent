@@ -33,7 +33,7 @@ def test_video_generation_pipeline():
         blueprint = await content_agent.generate_blueprint(news_item=item)
 
         assert blueprint is not None
-        assert 5 <= blueprint.estimated_duration_seconds <= 60
+        assert 1 <= blueprint.estimated_duration_seconds <= 60
         assert len(blueprint.scenes) > 0
         assert blueprint.hook != ""
 

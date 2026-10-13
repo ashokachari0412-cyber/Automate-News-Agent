@@ -152,8 +152,26 @@ class ContentAgent:
                 ),
             ]
 
-        duration = int(settings.VIDEO_DURATION_SECONDS or resp.get("estimated_duration_seconds", 5))
+        duration = int(settings.VIDEO_DURATION_SECONDS or 3)
         hook = resp.get("hook", news_item.hook or "Check out this AI breakthrough.")
+
+        if duration <= 3:
+            # 3-second rapid test: Keep script strictly to 1 punchy short sentence (approx 7 words)
+            short_script = hook
+            words = short_script.split()
+            if len(words) > 8:
+                short_script = " ".join(words[:7]) + "."
+            scenes = [
+                SceneClip(
+                    scene_number=1,
+                    timestamp="00:00 - 00:03",
+                    duration_seconds=3.0,
+                    spoken_script=short_script,
+                    visual_description=f"Ashok P avatar speaking directly to camera presenting {news_item.title}",
+                    on_screen_text=news_item.title[:30].upper(),
+                )
+            ]
+            hook = short_script
 
         first_url = news_item.source_urls[0] if news_item.source_urls else ""
 

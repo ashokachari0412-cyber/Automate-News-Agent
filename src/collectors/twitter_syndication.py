@@ -4,6 +4,7 @@ Allows collecting recent posts from public Twitter handles without requiring
 a paid Twitter API Developer subscription.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -38,22 +39,29 @@ class TwitterSyndicationCollector(BaseCollector):
         max_per_account: int = 5,
         max_age_hours: int = 24,
     ) -> List[RawTweet]:
-        """Query syndication endpoints for each account."""
+        """Query syndication endpoints concurrently for high-speed collection."""
         results: List[RawTweet] = []
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
-        async with httpx.AsyncClient(headers=HEADERS, timeout=12.0, follow_redirects=True) as client:
-            for account in accounts:
+        # Prioritize top frontier accounts first for speed
+        target_accounts = accounts[:6]
+
+        async with httpx.AsyncClient(headers=HEADERS, timeout=4.0, follow_redirects=True) as client:
+            async def _safe_fetch(acc):
                 try:
-                    tweets = await self._fetch_syndication(
+                    return await self._fetch_syndication(
                         client=client,
-                        account=account,
+                        account=acc,
                         max_results=max_per_account,
                         cutoff_time=cutoff_time
                     )
-                    results.extend(tweets)
                 except Exception as e:
-                    logger.debug(f"Syndication fetch for @{account.handle} encountered: {e}")
+                    logger.debug(f"Syndication fetch for @{acc.handle} notice: {e}")
+                    return []
+
+            fetched_lists = await asyncio.gather(*[_safe_fetch(a) for a in target_accounts])
+            for tweets in fetched_lists:
+                results.extend(tweets)
 
         logger.info(f"Syndication collector retrieved {len(results)} tweets.")
         return results

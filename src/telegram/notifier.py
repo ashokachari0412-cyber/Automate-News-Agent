@@ -1,8 +1,11 @@
 """Telegram notification and interaction service for Human-in-the-Loop review & video generation."""
 
 import html
+import json
 import logging
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
 
@@ -26,55 +29,113 @@ class TelegramNotifier:
     def is_configured(self) -> bool:
         return bool(self.bot_token and self.chat_id)
 
-    async def send_ranking_digest(self, result: NewsRankingResult) -> bool:
+    async def send_ranking_digest(self, result: NewsRankingResult, chat_id: Optional[str] = None) -> bool:
         """Step 1: Send clean news updates (without video hooks) with 'Generate Video' buttons."""
-        if not self.is_configured():
+        cid = chat_id or self.chat_id
+        if not self.base_url or not cid:
             logger.warning("Telegram not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID).")
             return False
 
-        header_msg = (
-            "🤖 <b>AI CONTENT AGENT: DAILY INTELLIGENCE DIGEST</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Strict 24h Window:</b> {result.total_tweets_collected} posts scanned\n"
-            f"🎯 <b>Action:</b> Review latest stories below and tap <b>[🎬 Generate Video]</b> to create a 35-40s short."
-        )
-        await self._send_message(header_msg)
+        now_str = datetime.now().strftime("%d-%b-%y")
+        header_msg = f"<b>News: {now_str}</b>"
+        await self._send_message(header_msg, chat_id=cid)
 
-        # Send individual clean news cards (NO video hook here, just clean informative news)
+        # Send individual clean news cards
         for idx, item in enumerate(result.items, start=1):
             msg, reply_markup = self._format_clean_news_item(item, rank=idx)
-            await self._send_message(msg, reply_markup=reply_markup)
+            await self._send_message(msg, reply_markup=reply_markup, chat_id=cid)
 
         return True
 
     def _format_clean_news_item(self, item: PrioritizedNewsItem, rank: int) -> tuple[str, Dict[str, Any]]:
-        """Formats a clean, informative news update without the video hook."""
-        bullets_formatted = "\n".join([f"  • {html.escape(b)}" for b in item.key_bullet_points[:3]])
+        """Formats clean news card with accurate publication timing and word dictionary."""
+        raw_title = item.title.strip()
+        short_title = (raw_title[:30] + "...") if len(raw_title) > 30 else raw_title
+
+        # Bullets with tasteful emoji icons
+        bullet_emojis = ["⚡", "🚀", "💡"]
+        bullets_formatted = "\n".join([
+            f"{bullet_emojis[i % len(bullet_emojis)]} {html.escape(b)}"
+            for i, b in enumerate(item.key_bullet_points[:3])
+        ])
+
+        # Source link formatting
+        source_name = item.primary_source_handle or "Verified Source"
+        if item.source_urls:
+            first_url = item.source_urls[0]
+            source_link = f'<a href="{first_url}">{html.escape(source_name)}</a>'
+        else:
+            source_link = html.escape(source_name)
+
+        # Accurate publication timing
+        if item.published_at:
+            now_utc = datetime.now(timezone.utc)
+            pub_dt = item.published_at if item.published_at.tzinfo else item.published_at.replace(tzinfo=timezone.utc)
+            delta_seconds = max(0, (now_utc - pub_dt).total_seconds())
+            delta_hours = delta_seconds / 3600.0
+
+            if delta_hours < 1:
+                mins = max(1, int(delta_seconds / 60))
+                time_str = f"Published: {mins}m ago"
+            elif delta_hours < 24:
+                time_str = f"Published: {pub_dt.strftime('%H:%M UTC')} ({int(delta_hours)}h ago)"
+            else:
+                time_str = f"Published: {pub_dt.strftime('%d-%b-%Y')}"
+        else:
+            time_str = f"Published: {datetime.now().strftime('%d-%b-%Y')}"
+
+        # In-place expandable vocabulary section (never leaves the chat page)
+        vocab_section = ""
+        if item.vocabulary:
+            vocab_items = [f"• <b>{html.escape(k)}:</b> {html.escape(v)}" for k, v in item.vocabulary.items()]
+            vocab_section = f"\n\n<blockquote expandable><b>📖 Word Meanings:</b>\n" + "\n".join(vocab_items) + "</blockquote>"
+
+        type_name = item.category.upper() if getattr(item, "category", None) else "AI UPDATE"
+        # Dynamic category icon
+        type_icon = "🔥" if any(k in type_name for k in ["TOOL", "APP", "LAUNCH"]) else (
+            "🧠" if any(k in type_name for k in ["MODEL", "FRONTIER", "LLM"]) else (
+                "🤖" if any(k in type_name for k in ["AGENT", "WORKFLOW"]) else (
+                    "🎨" if any(k in type_name for k in ["GENERATIVE", "DIFFUSION", "CREATIVE"]) else (
+                        "💻" if any(k in type_name for k in ["HARDWARE", "CHIP", "COMPUTE"]) else "📌"
+                    )
+                )
+            )
+        )
 
         msg = (
-            f"📰 <b>#{rank} | {html.escape(item.title)}</b>\n"
-            f"<b>Source:</b> @{item.primary_source_handle} | <b>Category:</b> #{item.category.replace(' ', '')}\n\n"
-            f"📝 <b>What Happened:</b>\n{html.escape(item.summary)}\n\n"
-            f"💡 <b>Key Takeaways:</b>\n{bullets_formatted}\n\n"
-            f"🎯 <b>Why It Matters:</b>\n{html.escape(item.why_it_matters)}"
+            f"🏷️ <b>Type:</b> {type_icon} <b>{html.escape(type_name)}</b>\n"
+            f"⚡ <b>U-{rank}: \"{html.escape(short_title)}\"</b>\n\n"
+            f"📝 {html.escape(item.summary)}\n\n"
+            f"🎯 <b>Key Takeaways:</b>\n"
+            f"{bullets_formatted}\n\n"
+            f"💡 <b>Why It Matters:</b>\n"
+            f"{html.escape(item.why_it_matters)}"
+            f"{vocab_section}\n\n"
+            f"🔗 <b>Source:</b> {source_link} | 🕒 {time_str}"
         )
 
         inline_keyboard = [
             [
                 {
-                    "text": "🎬 Generate Video for This",
+                    "text": "🔍 Know more",
+                    "callback_data": f"know_more:{item.id}"
+                },
+                {
+                    "text": "🎬 Generate Vid",
                     "callback_data": f"gen_video:{item.id}"
+                },
+                {
+                    "text": "🖼️ Post as Images",
+                    "callback_data": f"post_images:{item.id}"
+                }
+            ],
+            [
+                {
+                    "text": "📖 Word Meanings",
+                    "callback_data": f"vocab:{item.id}"
                 }
             ]
         ]
-
-        if item.source_urls:
-            inline_keyboard.append([
-                {
-                    "text": "🔗 View Original Source",
-                    "url": item.source_urls[0]
-                }
-            ])
 
         return msg, {"inline_keyboard": inline_keyboard}
 
@@ -183,7 +244,7 @@ class TelegramNotifier:
                         "caption": caption,
                         "parse_mode": "HTML",
                         "supports_streaming": "true",
-                        "reply_markup": httpx._utils.json_dumps({"inline_keyboard": inline_keyboard}),
+                        "reply_markup": json.dumps({"inline_keyboard": inline_keyboard}),
                     }
                     resp = await client.post(f"{self.base_url}/sendVideo", data=data, files=files)
                     if resp.status_code == 200:
@@ -247,3 +308,103 @@ class TelegramNotifier:
             except Exception as e:
                 logger.error(f"Error sending message: {e}")
         return None
+
+    async def send_photo_album(
+        self,
+        photo_paths: List[Path],
+        caption: str = "",
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Uploads multiple 3:4 Instagram carousel photos as an album (media group) to Telegram."""
+        cid = chat_id or self.chat_id
+        if not self.base_url or not cid or not photo_paths:
+            return False
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            open_files = []
+            try:
+                media_list = []
+                files = {}
+                for idx, p in enumerate(photo_paths):
+                    var_name = f"photo_{idx}"
+                    entry: Dict[str, Any] = {
+                        "type": "photo",
+                        "media": f"attach://{var_name}",
+                    }
+                    if idx == 0 and caption:
+                        entry["caption"] = caption
+                        entry["parse_mode"] = "HTML"
+                    media_list.append(entry)
+                    f_handle = open(p, "rb")
+                    open_files.append(f_handle)
+                    files[var_name] = (p.name, f_handle, "image/png")
+
+                data = {
+                    "chat_id": cid,
+                    "media": json.dumps(media_list),
+                }
+
+                resp = await client.post(f"{self.base_url}/sendMediaGroup", data=data, files=files)
+                return resp.status_code == 200
+            except Exception as e:
+                logger.error(f"Failed to send photo album: {e}")
+                return False
+            finally:
+                for fh in open_files:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+
+    async def send_photo_file(
+        self,
+        photo_path: Path,
+        caption: str = "",
+        reply_markup: Optional[Dict[str, Any]] = None,
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Upload a single photo file to Telegram chat."""
+        cid = chat_id or self.chat_id
+        if not self.base_url or not cid or not photo_path.exists():
+            return False
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                with open(photo_path, "rb") as pf:
+                    files = {"photo": (photo_path.name, pf, "image/png")}
+                    data: Dict[str, Any] = {
+                        "chat_id": cid,
+                        "caption": caption,
+                        "parse_mode": "HTML",
+                    }
+                    if reply_markup:
+                        data["reply_markup"] = json.dumps(reply_markup)
+                    resp = await client.post(f"{self.base_url}/sendPhoto", data=data, files=files)
+                    return resp.status_code == 200
+            except Exception as e:
+                logger.error(f"Error sending photo: {e}")
+                return False
+
+    async def edit_reply_markup(
+        self,
+        message_id: int,
+        reply_markup: Dict[str, Any],
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """Dynamically edits inline keyboard (for toggling checkboxes in place)."""
+        cid = chat_id or self.chat_id
+        if not self.base_url or not cid:
+            return False
+
+        payload = {
+            "chat_id": cid,
+            "message_id": message_id,
+            "reply_markup": reply_markup,
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                resp = await client.post(f"{self.base_url}/editMessageReplyMarkup", json=payload)
+                return resp.status_code == 200
+            except Exception as e:
+                logger.debug(f"Failed to edit reply markup: {e}")
+                return False

@@ -1,0 +1,168 @@
+# ==============================================================================
+# Authorized Primary Sources for AI Intelligence Collection (100% Free & Legal)
+# ==============================================================================
+
+sources:
+  # ----------------------------------------------------------------------------
+  # 1. Frontier AI Engineering & Research Labs (Primary Direct Feeds)
+  # ----------------------------------------------------------------------------
+  - name: "OpenAI Official"
+    handle: "OpenAI"
+    url: "https://openai.com/news/rss.xml"
+    type: "rss"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["GPT Models", "Operator", "Codex", "Safety Research"]
+
+  - name: "Google DeepMind"
+    handle: "GoogleDeepMind"
+    url: "https://deepmind.google/blog/rss.xml"
+    type: "rss"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["Gemini", "Veo", "AlphaFold", "Frontier AI"]
+
+  - name: "Google AI"
+    handle: "GoogleAI"
+    url: "https://blog.google/technology/ai/rss/"
+    type: "rss"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["Google AI Products", "Gemma", "Workspace AI"]
+
+  - name: "Anthropic"
+    handle: "AnthropicAI"
+    url: "https://www.anthropic.com/news"
+    type: "web"
+    category: "official_lab"
+    weight: 1.5
+    topics: ["Claude", "Computer Use", "System Prompts", "AI Safety"]
+
+  - name: "Hugging Face"
+    handle: "huggingface"
+    url: "https://huggingface.co/blog/feed.xml"
+    type: "rss"
+    category: "official_lab"
+    weight: 1.4
+    topics: ["Open Source Models", "Transformers", "Leaderboards"]
+
+  - name: "Microsoft Research AI"
+    handle: "MSFTResearch"
+    url: "https://www.microsoft.com/en-us/research/feed/"
+    type: "rss"
+    category: "official_lab"
+    weight: 1.4
+    topics: ["Agentic Frameworks", "Reasoning Models", "Enterprise AI"]
+
+  - name: "Mistral AI"
+    handle: "MistralAI"
+    url: "https://mistral.ai/news/rss.xml"
+    type: "rss"
+    category: "official_lab"
+    weight: 1.4
+    topics: ["Mistral Models", "Codestral", "Open Weights"]
+
+  - name: "Meta News / AI"
+    handle: "MetaAI"
+    url: "https://about.fb.com/news/feed/"
+    type: "rss"
+    category: "official_lab"
+    weight: 1.4
+    topics: ["Llama Models", "Open Source AI", "PyTorch"]
+
+  # ----------------------------------------------------------------------------
+  # 2. New AI Tools, Apps, Frameworks & Launches
+  # ----------------------------------------------------------------------------
+  - name: "MarkTechPost AI"
+    handle: "MarkTechPost"
+    url: "https://www.marktechpost.com/feed/"
+    type: "rss"
+    category: "ai_tools"
+    weight: 1.4
+    topics: ["New AI Tools", "Open Weights", "Model Benchmarks", "Developer Utilities"]
+
+  - name: "TechCrunch AI"
+    handle: "TechCrunch"
+    url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+    type: "rss"
+    category: "ai_tools"
+    weight: 1.4
+    topics: ["AI Startups", "Product Launches", "Venture & Funding"]
+
+  - name: "VentureBeat AI"
+    handle: "VentureBeat"
+    url: "https://venturebeat.com/category/ai/feed/"
+    type: "rss"
+    category: "ai_tools"
+    weight: 1.4
+    topics: ["Enterprise AI", "Agent Architectures", "Product Announcements"]
+
+  - name: "ZDNet AI"
+    handle: "ZDNet"
+    url: "https://www.zdnet.com/topic/artificial-intelligence/rss.xml"
+    type: "rss"
+    category: "ai_tools"
+    weight: 1.3
+    topics: ["AI Productivity Tools", "Business AI", "Practical AI"]
+
+  # ----------------------------------------------------------------------------
+  # 3. Trending Open Source AI Repos & Papers
+  # ----------------------------------------------------------------------------
+  - name: "GitHub Trending AI Repositories"
+    handle: "GitHub"
+    url: "https://api.github.com/search/repositories"
+    type: "api"
+    category: "ai_tools"
+    weight: 1.4
+    topics: ["Viral AI Tools", "Agent Frameworks", "Open-Source Apps"]
+
+  - name: "Hugging Face Daily Papers"
+    handle: "huggingface_papers"
+    url: "https://huggingface.co/api/daily_papers"
+    type: "api"
+    category: "research_breakthrough"
+    weight: 1.3
+    topics: ["Top-Upvoted arXiv Papers", "Model Architectures", "Benchmarks"]
+
+  # ----------------------------------------------------------------------------
+  # 4. Consumer Tech, Hardware & Curated Tech Journalism
+  # ----------------------------------------------------------------------------
+  - name: "The Verge Tech"
+    handle: "verge"
+    url: "https://www.theverge.com/rss/index.xml"
+    type: "rss"
+    category: "consumer_tech"
+    weight: 1.3
+    topics: ["Consumer AI", "Smartphone AI", "Big Tech Hardware"]
+
+  - name: "Wired AI"
+    handle: "WIRED"
+    url: "https://www.wired.com/feed/tag/ai/latest/rss"
+    type: "rss"
+    category: "curated_journalism"
+    weight: 1.3
+    topics: ["Deep Dives", "Tech Culture", "AI Impact"]
+
+  - name: "Ars Technica"
+    handle: "arstechnica"
+    url: "https://feeds.arstechnica.com/arstechnica/technology-lab"
+    type: "rss"
+    category: "curated_journalism"
+    weight: 1.3
+    topics: ["Technical Analysis", "Policy & Law", "In-depth AI Reporting"]
+
+  - name: "MIT Technology Review AI"
+    handle: "MITTechReview"
+    url: "https://www.technologyreview.com/topic/artificial-intelligence/feed"
+    type: "rss"
+    category: "curated_journalism"
+    weight: 1.3
+    topics: ["Investigative Tech News", "AI Policy", "Industry Impact"]
+
+  - name: "NVIDIA Newsroom"
+    handle: "NVIDIA"
+    url: "https://nvidianews.nvidia.com/releases.xml"
+    type: "rss"
+    category: "ai_hardware"
+    weight: 1.4
+    topics: ["AI Chips", "GPU Infrastructure", "Blackwell & CUDA"]

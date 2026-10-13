@@ -19,7 +19,7 @@ class VideoBlueprint(BaseModel):
     news_id: str
     title: str
     hook: str = Field(..., description="Irresistible 0-5s opening hook")
-    estimated_duration_seconds: int = Field(default=5, ge=5, le=60)
+    estimated_duration_seconds: int = Field(default=3, ge=1, le=60)
     scenes: List[SceneClip] = Field(default_factory=list)
     avatar_profile: str = Field(
         default="Tech Founder (Professional / AI Pioneer)",

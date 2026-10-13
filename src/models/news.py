@@ -1,7 +1,7 @@
 """Data models for prioritized AI news items and pipeline results."""
 
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -37,7 +37,9 @@ class PrioritizedNewsItem(BaseModel):
     )
     primary_source_handle: str = Field(default="", description="Twitter handle that broke or led the news")
     source_urls: List[str] = Field(default_factory=list, description="Original tweet links or referenced URLs")
-    source_tweet_ids: List[str] = Field(default_factory=list)
+    published_at: Optional[datetime] = Field(default=None, description="Actual publication timestamp from source")
+    vocabulary: Dict[str, str] = Field(default_factory=dict, description="Simple meanings of technical terms in this update")
+    image_prompt: str = Field(default="", description="Detailed, high-tech prompt to generate an image tailored to this exact news update")
 
 
 class NewsRankingResult(BaseModel):

@@ -208,6 +208,16 @@ class ResearchNodes:
                         source_urls.append(tw.source_url)
                     tweet_ids.append(tw.id)
 
+                # Get publication timestamp from source tweet/feed item
+                published_at = None
+                if associated_cluster and associated_cluster.tweets:
+                    published_at = associated_cluster.tweets[0].created_at
+                elif idx < len(clusters) and clusters[idx].tweets:
+                    published_at = clusters[idx].tweets[0].created_at
+
+                raw_vocab = item_data.get("vocabulary", {})
+                vocab_dict = {str(k): str(v) for k, v in raw_vocab.items()} if isinstance(raw_vocab, dict) else {}
+
                 news_item = PrioritizedNewsItem(
                     id=f"news_{idx + 1}",
                     title=item_data.get("title", "AI Development"),
@@ -222,6 +232,9 @@ class ResearchNodes:
                     primary_source_handle=primary_handle,
                     source_urls=list(set(source_urls))[:4],
                     source_tweet_ids=tweet_ids,
+                    published_at=published_at,
+                    vocabulary=vocab_dict,
+                    image_prompt=item_data.get("image_prompt", ""),
                 )
                 ranked_items.append(news_item)
             except Exception as e:

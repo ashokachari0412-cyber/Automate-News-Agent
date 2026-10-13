@@ -33,22 +33,44 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = Field(default=None)
     GEMINI_MODEL: str = "gemini-3.8-flash"
 
-    # Twitter / X Collection (Playwright with cookies)
-    COLLECTOR_MODE: Literal["auto", "playwright", "mock"] = "auto"
+    # News & Research Collection (100% Authorized AI Lab Feeds + Hugging Face)
+    COLLECTOR_MODE: Literal["authorized", "auto", "playwright", "syndication", "mock"] = "authorized"
     PLAYWRIGHT_HEADLESS: bool = True
     COOKIES_FILE: str = "cookies.json"
     USER_DATA_DIR: str = "userdata"
 
     TWEETS_PER_ACCOUNT: int = 2
     MAX_TWEET_AGE_HOURS: int = 24
-    VIDEO_DURATION_SECONDS: int = 5
+    VIDEO_DURATION_SECONDS: int = 3
+
+    # Avatar & Voice Configuration
+    AVATAR_IMAGE_PATH: str = "assets/avatar.png"
+    TTS_VOICE: str = "en-US-AndrewNeural"
+    INTRO_AVATAR_DURATION: float = 3.0
+    ENABLE_GEMINI_VEO: bool = False
+    VEO_MODEL: str = "veo-3.1-fast-generate-preview"
+
+    # HeyGen AI Avatar Clone Settings
+    HEYGEN_API_KEY: Optional[str] = Field(default=None)
+    HEYGEN_AVATAR_ID: str = "0c8510c2f7ad4b96a5193bb7ce4c18a2"
+    HEYGEN_VOICE_ID: Optional[str] = Field(default=None)
 
     # Telegram (Human-in-the-Loop Review)
     TELEGRAM_BOT_TOKEN: Optional[str] = Field(default=None)
     TELEGRAM_CHAT_ID: Optional[str] = Field(default=None)
+    ENABLE_EMBEDDED_BOT: bool = Field(default=True)
 
     # Slack (Optional Webhook)
     SLACK_WEBHOOK_URL: Optional[str] = Field(default=None)
+
+    # Instagram Direct Auto-Posting (instagrapi)
+    INSTAGRAM_USERNAME: Optional[str] = Field(default=None)
+    INSTAGRAM_PASSWORD: Optional[str] = Field(default=None)
+    INSTAGRAM_SESSIONID: Optional[str] = Field(default=None)
+
+    # Scheduler Settings (Containerized Periodic Pipeline)
+    SCHEDULE_INTERVAL_HOURS: int = Field(default=4)
+    SCHEDULE_RUN_ON_STARTUP: bool = Field(default=True)
 
     # Server Settings (FastAPI + LangGraph Orchestrator)
     APP_HOST: str = "0.0.0.0"
@@ -56,16 +78,17 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
 
-    # Operating Hours & Persona (Active between 10:00 AM - 10:00 PM)
-    ACTIVE_HOURS_ENABLED: bool = True
-    ACTIVE_HOURS_START: int = 10   # 10 AM
-    ACTIVE_HOURS_END: int = 22     # 10 PM
+    # Operating Hours & Persona (Active between 9:00 AM - 11:59 PM)
+    ACTIVE_HOURS_ENABLED: bool = False
+    ACTIVE_HOURS_START: int = 9    # 9 AM
+    ACTIVE_HOURS_END: int = 24     # 11:59 PM (hours 9 through 23 inclusive)
+    TIMEZONE: str = "Asia/Kolkata" # User's local timezone
     USER_NAME: str = "Ashok"
 
     # Prioritization Parameters
     HIGH_PRIORITY_THRESHOLD: float = 75.0
     MEDIUM_PRIORITY_THRESHOLD: float = 50.0
-    TOP_NEWS_LIMIT: int = 5
+    TOP_NEWS_LIMIT: int = 4
 
     def get_trusted_accounts(self) -> List[TwitterAccountConfig]:
         """Load configured trusted twitter accounts from YAML."""

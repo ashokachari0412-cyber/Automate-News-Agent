@@ -66,24 +66,52 @@ STEP 3: Live Progress & Playable Video Delivered in Telegram
 
 ---
 
-## 🚀 How to Run
+---
 
-### 1. Send the Clean News Cards to Telegram (Strict 24h Window)
+## 🐳 Running with Docker (Multi-Container Architecture)
+
+The system is fully dockerized with a dedicated container for each core service:
+1. **`news-agent-api`**: FastAPI Orchestrator & REST Engine (Port `8000`)
+2. **`news-agent-bot`**: Interactive Telegram Bot (Human-in-the-Loop review, button clicks, HeyGen clone generation, Instagram 3:4 carousels)
+3. **`news-agent-scheduler`**: Autonomous News Pipeline Scheduler (Periodic strict 24h AI news scanning & dispatch)
+4. **`news-agent-redis`**: Shared In-Memory Cache & Message Broker (Port `6379`)
+
+### Quick Start with Docker
 ```bash
-python -m src.cli run --telegram
-```
+# Build and run all services in background
+docker compose up -d --build
 
-### 2. Start the Interactive Bot Listener (Listens for Button Clicks in Telegram)
+# View live streaming logs across all containers
+docker compose logs -f
+
+# Check container health status
+docker compose ps
+```
+*(Windows users can simply double-click `docker-start.bat`)*
+
+See [DOCKER.md](file:///d:/Projects/Automate-News-Agent/DOCKER.md) for full details on volume mounts, scaling, and endpoint testing.
+
+---
+
+## 💻 Running Locally (Without Docker)
+
+### 1. Start the Interactive Bot Listener
 ```bash
 python -m src.cli bot
 ```
-*Keep this running so whenever you tap `[🎬 Generate Video for This]` or `[🚀 Render Final Video]` in Telegram, the bot immediately creates the script and delivers the finished MP4 video!*
+*(Or double-click `start_bot.bat`)*
 
-### 3. Or Start the FastAPI Server (Includes background bot listener)
+### 2. Run a News Scan & Send Cards to Telegram
+```bash
+python -m src.cli run --telegram
+```
+*(Or double-click `start_daily_pipeline.bat`)*
+
+### 3. Start the FastAPI Server
 ```bash
 python -m src.cli serve --port 8000
 ```
-Interactive docs at: `http://localhost:8000/docs`
+Interactive API docs at: `http://localhost:8000/docs`
 
 ---
 
@@ -93,4 +121,4 @@ Run the full automated test suite:
 ```bash
 pytest -v
 ```
-*(All 12 tests passing: collectors, 24h strict window, LangGraph state machine, Content Agent, 9:16 Video Generator, and FastAPI endpoints).*
+*(All tests passing: collectors, 24h strict window, LangGraph state machine, Content Agent, 9:16 Video Generator, and FastAPI endpoints).*
