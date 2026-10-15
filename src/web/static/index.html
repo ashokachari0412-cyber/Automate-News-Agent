@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ALFRED — Wayne Tech AI Intelligence & Content Studio</title>
+  <meta name="description" content="Autonomous AI News Radar, 4-Slide Instagram Carousel Studio, and Alfred Executive AI Assistant for @ashok_a.i" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Header: Wayne Tech Command Bar -->
+    <header class="top-nav" id="top-nav">
+      <div class="brand-group">
+        <div class="bat-crest">
+          <svg viewBox="0 0 48 48" fill="none" class="crest-svg" xmlns="http://www.w3.org/2000/svg">
+            <path d="M24 6L28 15L39 12L34 22L45 25L36 32L40 42L28 35L24 42L20 35L8 42L12 32L3 25L14 22L9 12L20 15L24 6Z" fill="url(#crest-grad)" />
+            <path d="M24 10L27 17L35 15L31 22L39 25L32 30L35 38L27 33L24 38L21 33L13 38L16 30L9 25L17 22L13 15L21 17L24 10Z" fill="#0d131f" />
+            <defs>
+              <linearGradient id="crest-grad" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#f59e0b" />
+                <stop offset="0.5" stop-color="#38bdf8" />
+                <stop offset="1" stop-color="#818cf8" />
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <div class="brand-title">
+            <span class="alfred-name">ALFRED</span>
+            <span class="version-tag">WAYNE TECH CORE v2.0</span>
+          </div>
+          <div class="brand-sub">Executive AI Intelligence & Content Command &bull; Master Ashok (<span class="accent-text">@ashok_a.i</span>)</div>
+        </div>
+      </div>
+
+      <div class="system-status-group">
+        <div class="status-pill online">
+          <span class="status-dot pulse"></span>
+          <span class="status-label">BATCAVE CORE // ONLINE</span>
+        </div>
+        <div class="status-pill feeds">
+          <span class="icon">📡</span>
+          <span id="feed-count">18 Sources Active</span>
+        </div>
+        <div class="time-pill">
+          <span id="live-clock">--:--:--</span>
+        </div>
+      </div>
+
+      <div class="nav-actions">
+        <button id="scan-btn" class="btn btn-primary" title="Trigger autonomous research scan across 18 authorized AI sources">
+          <span class="btn-icon">⚡</span>
+          <span class="btn-text">Scan 18 Sources</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main 3-Column Dashboard Body -->
+    <main class="dashboard-body">
+      <!-- COLUMN 1: AI Radar Feed -->
+      <section class="panel radar-panel" id="radar-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-icon">📡</span>
+            <div>
+              <h2 class="panel-title">AI News Radar</h2>
+              <p class="panel-sub">Ranked high-priority intelligence updates</p>
+            </div>
+          </div>
+          <span class="badge count-badge" id="news-count-badge">0 items</span>
+        </div>
+
+        <!-- Filter & Search Controls -->
+        <div class="radar-controls">
+          <div class="search-wrap">
+            <input type="text" id="news-search" placeholder="Filter intelligence..." aria-label="Search AI News" />
+            <span class="search-icon">🔍</span>
+          </div>
+          <div class="category-filters" id="category-filters">
+            <button class="filter-chip active" data-category="ALL">All</button>
+            <button class="filter-chip" data-category="Tool">🛠️ Tools</button>
+            <button class="filter-chip" data-category="Frontier">🧠 Models</button>
+            <button class="filter-chip" data-category="Agent">🤖 Agents</button>
+            <button class="filter-chip" data-category="Robotics">🦾 Robotics</button>
+          </div>
+        </div>
+
+        <!-- Scrollable Feed -->
+        <div class="radar-feed-list" id="radar-feed-list">
+          <div class="loading-state">
+            <div class="radar-spinner"></div>
+            <p>Alfred is calibrating sensor feeds...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- COLUMN 2: 4-Slide Instagram Carousel Studio -->
+      <section class="panel studio-panel" id="studio-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-icon">🎨</span>
+            <div>
+              <h2 class="panel-title">4-Slide Carousel Studio</h2>
+              <p class="panel-sub" id="active-story-title">No story selected</p>
+            </div>
+          </div>
+          <div class="studio-header-actions">
+            <button id="regen-carousel-btn" class="btn btn-secondary btn-sm" title="Re-render 4 slides with fresh AI visual art">
+              <span class="btn-icon">🔄</span>
+              <span>Re-render Slides</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Slide Switcher Tabs -->
+        <div class="slide-nav-tabs" id="slide-nav-tabs">
+          <button class="slide-tab active" data-slide="1">
+            <span class="tab-num">01</span>
+            <span class="tab-label">Viral Hook</span>
+          </button>
+          <button class="slide-tab" data-slide="2">
+            <span class="tab-num">02</span>
+            <span class="tab-label">Architecture</span>
+          </button>
+          <button class="slide-tab" data-slide="3">
+            <span class="tab-num">03</span>
+            <span class="tab-label">Key Points</span>
+          </button>
+          <button class="slide-tab" data-slide="4">
+            <span class="tab-num">04</span>
+            <span class="tab-label">Takeaways</span>
+          </button>
+        </div>
+
+        <!-- Canvas Preview Area -->
+        <div class="studio-canvas-wrap">
+          <div class="slide-viewport" id="slide-viewport">
+            <img id="active-slide-img" src="" alt="Slide Preview" class="slide-img" />
+            <div class="slide-overlay-info">
+              <div class="slide-meta-pill">
+                <span id="current-slide-badge">Slide 01 of 04</span>
+                <span class="watermark-tag">Created by @ashok_a.i</span>
+              </div>
+            </div>
+            <div id="slide-loader" class="slide-loader hidden">
+              <div class="radar-spinner"></div>
+              <p id="slide-loader-text">Alfred is generating bespoke visual artwork...</p>
+            </div>
+          </div>
+
+          <!-- Carousel Controls -->
+          <div class="slide-nav-controls">
+            <button id="prev-slide-btn" class="nav-arrow" title="Previous Slide (Left Arrow)">◀</button>
+            <div class="slide-dots" id="slide-dots">
+              <span class="dot active"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+            </div>
+            <button id="next-slide-btn" class="nav-arrow" title="Next Slide (Right Arrow)">▶</button>
+          </div>
+        </div>
+
+        <!-- Slide Content Summary -->
+        <div class="slide-context-card" id="slide-context-card">
+          <div class="context-header">
+            <span class="context-type" id="slide-type-text">SLIDE 1 // HOOK & HERO</span>
+            <span class="aspect-pill">3:4 Ratio (1080 &times; 1350)</span>
+          </div>
+          <p class="context-body" id="slide-context-text">Select an intelligence item from the Radar to inspect slides.</p>
+        </div>
+
+        <!-- Publishing & Distribution Bar -->
+        <div class="publishing-box">
+          <div class="pub-row-top">
+            <div class="platform-checkboxes">
+              <label class="platform-label active">
+                <input type="checkbox" id="pub-ig" checked />
+                <span>📸 Instagram</span>
+              </label>
+              <label class="platform-label active">
+                <input type="checkbox" id="pub-linkedin" checked />
+                <span>💼 LinkedIn</span>
+              </label>
+              <label class="platform-label">
+                <input type="checkbox" id="pub-x" />
+                <span>🐦 X / Twitter</span>
+              </label>
+              <label class="platform-label">
+                <input type="checkbox" id="pub-yt" />
+                <span>📹 YouTube</span>
+              </label>
+            </div>
+            <button id="publish-btn" class="btn btn-accent">
+              <span class="btn-icon">🚀</span>
+              <span>Publish Carousel</span>
+            </button>
+          </div>
+
+          <!-- Caption Viewer -->
+          <div class="caption-wrapper">
+            <div class="caption-header">
+              <span>Instagram & LinkedIn Caption Preview</span>
+              <button id="copy-caption-btn" class="btn-copy">📋 Copy Caption</button>
+            </div>
+            <textarea id="caption-preview" rows="3" readonly placeholder="Autonomous caption with hashtags will generate here..."></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- COLUMN 3: Alfred Executive AI Butler -->
+      <section class="panel alfred-panel" id="alfred-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <div class="alfred-avatar">
+              <span class="alfred-glyph">🎩</span>
+            </div>
+            <div>
+              <h2 class="panel-title">Alfred</h2>
+              <p class="panel-sub">Executive Butler & AI Copilot</p>
+            </div>
+          </div>
+          <div class="alfred-status-pill">
+            <span class="status-dot gold pulse"></span>
+            <span>At Your Service</span>
+          </div>
+        </div>
+
+        <!-- Alfred Quick Prompt Chips -->
+        <div class="alfred-chips" id="alfred-chips">
+          <button class="chip" data-prompt="Master Alfred, please provide a comprehensive executive technical intelligence breakdown on the current story.">🔬 Deep-Dive Briefing</button>
+          <button class="chip" data-prompt="Alfred, formulate three punchier, high-conversion hooks for Slide 1.">🎯 Punchier Hooks</button>
+          <button class="chip" data-prompt="What is the strategic competitive advantage of this development for enterprise developers?">💼 Strategic Advantage</button>
+          <button class="chip" data-prompt="Draft a crisp 30-second video script for an Instagram Reel on this topic.">🎙️ 30s Reel Script</button>
+        </div>
+
+        <!-- Chat Message History -->
+        <div class="alfred-chat-box" id="alfred-chat-box">
+          <!-- Alfred Welcome Message -->
+          <div class="chat-msg alfred">
+            <div class="msg-avatar">🎩</div>
+            <div class="msg-content">
+              <div class="msg-sender">Alfred Pennyworth</div>
+              <p>Good evening, Master Ashok. The Batcave neural feeds have been synthesized. All eighteen authorized AI channels are monitored under your insignia (<span class="accent-text">@ashok_a.i</span>).</p>
+              <p>How may I assist your content operations this evening, Sir? I stand prepared to dissect architectures, polish carousel slides, or dispatch our intelligence across the network.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Input Bar -->
+        <div class="alfred-input-bar">
+          <div class="chat-context-indicator" id="chat-context-indicator">
+            <span class="icon">📌</span>
+            <span id="chat-context-label">Context: No story selected</span>
+          </div>
+          <div class="input-row">
+            <textarea id="alfred-user-input" rows="1" placeholder="Instruct Alfred (e.g., 'Analyze the benchmark results for Slide 3')..." aria-label="Message Alfred"></textarea>
+            <button id="alfred-send-btn" class="btn btn-primary btn-icon-only" title="Send instruction to Alfred">
+              <span>➤</span>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Global Toast Notification -->
+    <div id="toast" class="toast hidden">
+      <span id="toast-icon">⚡</span>
+      <span id="toast-msg">Notification message</span>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
