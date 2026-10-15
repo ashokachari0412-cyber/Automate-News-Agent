@@ -498,7 +498,7 @@ class VideoGenerator:
             if heygen_success and output_path.exists() and output_path.stat().st_size > 1000:
                 logger.info(f"HeyGen video clone generated successfully: {output_path}")
                 if progress_callback:
-                    await self._notify(progress_callback, 100, "HeyGen digital clone ready! Delivering to Telegram...")
+                    await self._notify(progress_callback, 100, "HeyGen digital clone ready! Ready.")
                 return str(output_path)
             logger.warning("HeyGen generation failed or was bypassed. Falling back to local synthesizer...")
 
@@ -555,7 +555,7 @@ class VideoGenerator:
             )
 
             if progress_callback:
-                await self._notify(progress_callback, 100, "Talking avatar video ready! Delivering to Telegram...")
+                await self._notify(progress_callback, 100, "Talking avatar video ready! Ready.")
 
         logger.info(f"Video Director: Output saved to {output_path}")
         return str(output_path)

@@ -46,9 +46,15 @@ class LLMClient:
     async def _call_gemini_json(self, prompt: str, system_prompt: str) -> Dict[str, Any]:
         """Invoke Google Gemini model requesting JSON response with automatic model fallback."""
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-        candidate_models = [self.cfg.GEMINI_MODEL, "gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-3.5-flash"]
-        # Deduplicate while preserving order
-        candidate_models = list(dict.fromkeys(candidate_models))
+        candidate_models = [
+            self.cfg.GEMINI_MODEL,
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3-flash-preview",
+            "gemini-flash-lite-latest",
+            "gemini-3.8-flash",
+        ]
+        candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
 
         last_err = None
         for m in candidate_models:
@@ -61,8 +67,17 @@ class LLMClient:
                         "temperature": 0.2,
                     }
                 )
-                text = response.text or "{}"
-                return self._extract_json(text)
+                text = ""
+                try:
+                    if hasattr(response, "text") and response.text:
+                        text = response.text.strip()
+                except Exception:
+                    pass
+                if not text and getattr(response, "candidates", None) and response.candidates:
+                    parts_txt = [p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text]
+                    text = "\n".join(parts_txt).strip()
+                if text:
+                    return self._extract_json(text)
             except Exception as e:
                 last_err = e
                 logger.warning(f"Gemini model {m} encountered: {e}. Trying next candidate...")
@@ -77,16 +92,23 @@ class LLMClient:
     ) -> str:
         """Generate conversational text output using Google Gemini."""
         if self._client:
-            candidate_models = [self.cfg.GEMINI_MODEL, "gemini-3.1-flash-lite", "gemini-3.7-flash", "gemini-3.5-flash"]
-            candidate_models = list(dict.fromkeys(candidate_models))
+            candidate_models = [
+                self.cfg.GEMINI_MODEL,
+                "gemini-3.1-flash-lite",
+                "gemini-3.1-flash-lite-preview",
+                "gemini-3-flash-preview",
+                "gemini-flash-lite-latest",
+                "gemini-3.8-flash",
+            ]
+            candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
 
             parts = []
             if system_prompt:
                 parts.append(f"Instructions: {system_prompt}\n")
             if history:
-                for h in history[-8:]:  # Keep recent context
+                for h in history[-20:]:  # Keep recent context (persistent memory)
                     role = h.get("role", "user")
-                    text = h.get("content", "")
+                    text = h.get("content", "")[:2000]
                     parts.append(f"{role.capitalize()}: {text}")
             parts.append(f"User: {prompt}\nAssistant:")
             full_prompt = "\n".join(parts)
@@ -100,8 +122,17 @@ class LLMClient:
                             "temperature": 0.7,
                         }
                     )
-                    if response and response.text:
-                        return response.text.strip()
+                    text = ""
+                    try:
+                        if hasattr(response, "text") and response.text:
+                            text = response.text.strip()
+                    except Exception:
+                        pass
+                    if not text and getattr(response, "candidates", None) and response.candidates:
+                        parts_txt = [p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text]
+                        text = "\n".join(parts_txt).strip()
+                    if text:
+                        return text
                 except Exception as e:
                     logger.warning(f"Gemini chat model {m} encountered: {e}. Trying next...")
 

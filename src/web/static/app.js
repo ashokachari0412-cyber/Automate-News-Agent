@@ -1,615 +1,466 @@
 /**
- * ALFRED // STARK-HUD TONY STARK JARVIS AI SYSTEM
- * Client Application Logic
+ * Alfred AI — Lightweight Butler Chat Engine
+ * Designed for Ashok (@ashok_a.i)
  */
 
 (function () {
-  // State
-  let allNewsItems = [];
-  let filteredNewsItems = [];
-  let activeNews = null;
-  let currentSlideNum = 1;
-  let activeCategory = "ALL";
-
   // Elements
-  const feedList = document.getElementById("radar-feed-list");
-  const newsCountBadge = document.getElementById("news-count-badge");
-  const newsSearch = document.getElementById("news-search");
-  const categoryFilters = document.getElementById("category-filters");
-  const scanBtn = document.getElementById("scan-btn");
-  const liveClock = document.getElementById("live-clock");
+  const heroSection = document.getElementById("hero-section");
+  const chatMessages = document.getElementById("chat-messages");
+  const chatWorkspace = document.getElementById("chat-workspace");
+  const chatInput = document.getElementById("chat-input");
+  const sendBtn = document.getElementById("send-btn");
+  const actionCards = document.querySelectorAll(".action-card");
 
-  // Studio Elements
-  const activeStoryTitle = document.getElementById("active-story-title");
-  const slideTabs = document.getElementById("slide-nav-tabs");
-  const activeSlideImg = document.getElementById("active-slide-img");
-  const slideLoader = document.getElementById("slide-loader");
-  const slideLoaderText = document.getElementById("slide-loader-text");
-  const currentSlideBadge = document.getElementById("current-slide-badge");
-  const slideTypeText = document.getElementById("slide-type-text");
-  const slideContextText = document.getElementById("slide-context-text");
-  const prevSlideBtn = document.getElementById("prev-slide-btn");
-  const nextSlideBtn = document.getElementById("next-slide-btn");
-  const slideDots = document.getElementById("slide-dots");
-  const regenCarouselBtn = document.getElementById("regen-carousel-btn");
-  const captionPreview = document.getElementById("caption-preview");
-  const copyCaptionBtn = document.getElementById("copy-caption-btn");
-  const publishBtn = document.getElementById("publish-btn");
+  // History Drawer
+  const historyBtn = document.getElementById("history-btn");
+  const newChatBtn = document.getElementById("new-chat-btn");
+  const historyDrawer = document.getElementById("history-drawer");
+  const closeHistoryBtn = document.getElementById("close-history-btn");
+  const drawerBackdrop = document.getElementById("drawer-backdrop");
+  const historyRows = document.querySelectorAll(".history-item-row");
 
-  // Alfred Elements
-  const alfredChatBox = document.getElementById("alfred-chat-box");
-  const alfredUserInput = document.getElementById("alfred-user-input");
-  const alfredSendBtn = document.getElementById("alfred-send-btn");
-  const chatContextLabel = document.getElementById("chat-context-label");
-  const alfredChips = document.getElementById("alfred-chips");
-  const waveformBar = document.getElementById("jarvis-waveform-bar");
+  // Tools
+  const attachBtn = document.getElementById("attach-btn");
+  const voiceBtn = document.getElementById("voice-btn");
 
-  // Toast
-  const toast = document.getElementById("toast");
-  const toastMsg = document.getElementById("toast-msg");
-  const toastIcon = document.getElementById("toast-icon");
-  let toastTimer = null;
+  let isGenerating = false;
 
-  // Initialize
   function init() {
-    startClock();
-    setupEventListeners();
-    fetchNews();
+    setupInputEvents();
+    setupActionCards();
+    setupHistoryDrawer();
+    setupToolButtons();
+    newChatBtn.addEventListener("click", clearMemory);
+    setupGoogleButton();
+    restoreMemory();
   }
 
-  function startClock() {
-    function update() {
-      const now = new Date();
-      liveClock.textContent = now.toLocaleTimeString("en-US", { hour12: false }) + " UTC";
-    }
-    update();
-    setInterval(update, 1000);
-  }
-
-  function showToast(message, icon = "◈", duration = 3500) {
-    if (toastTimer) clearTimeout(toastTimer);
-    toastIcon.textContent = icon;
-    toastMsg.textContent = message;
-    toast.classList.remove("hidden");
-    toastTimer = setTimeout(() => {
-      toast.classList.add("hidden");
-    }, duration);
-  }
-
-  function setWaveformActive(active = true) {
-    if (!waveformBar) return;
-    const bars = waveformBar.querySelectorAll(".wave-bar");
-    bars.forEach((b) => {
-      b.style.animationDuration = active ? "0.4s" : "1.2s";
-      b.style.filter = active ? "brightness(1.8)" : "none";
-    });
-  }
-
-  // ============================================================================
-  // NEWS FEED LOGIC
-  // ============================================================================
-
-  async function fetchNews() {
+  // Replays the persisted conversation (server-side memory) after a reload
+  async function restoreMemory() {
     try {
-      const res = await fetch("/api/v1/news");
-      if (!res.ok) throw new Error("Failed to load intelligence feed");
-      const data = await res.json();
-      allNewsItems = data.items || [];
-      applyFilters();
-      if (allNewsItems.length > 0 && !activeNews) {
-        selectStory(allNewsItems[0]);
+      const res = await fetch("/api/v1/alfred/memory");
+      const memory = await res.json();
+      const messages = memory.messages || [];
+      if (!messages.length) return;
+      if (heroSection) heroSection.classList.add("hidden");
+      messages.forEach((m) => appendMessage(m.role, m.content, m));
+    } catch (e) {
+      console.warn("Could not restore memory:", e);
+    }
+  }
+
+  async function setupGoogleButton() {
+    const btn = document.getElementById("google-btn");
+    const label = btn.querySelector("span");
+    let connected = false;
+    try {
+      const s = await (await fetch("/api/v1/google/status")).json();
+      connected = s.connected;
+    } catch (e) {
+      console.warn("Google status unavailable:", e);
+    }
+    label.textContent = connected ? "Google connected" : "Connect Google";
+    btn.title = connected ? "Click to disconnect your Google account" : "Connect your Google account";
+    btn.addEventListener("click", async () => {
+      if (!connected) {
+        window.location.href = "/api/v1/google/connect";
+        return;
       }
-    } catch (err) {
-      console.error("Fetch news error:", err);
-      feedList.innerHTML = `
-        <div class="loading-state">
-          <p style="color: var(--holo-red)" class="hud-mono">⚠️ NEURAL LINK OFFLINE. RECONNECTING...</p>
-          <button class="hud-btn hud-btn-secondary" onclick="location.reload()">RE-ENGAGE LINK</button>
-        </div>`;
-    }
-  }
-
-  function applyFilters() {
-    const query = (newsSearch.value || "").toLowerCase().trim();
-    filteredNewsItems = allNewsItems.filter((item) => {
-      const matchesCat =
-        activeCategory === "ALL" ||
-        (item.category && item.category.toLowerCase().includes(activeCategory.toLowerCase()));
-      const matchesSearch =
-        !query ||
-        item.title.toLowerCase().includes(query) ||
-        (item.summary && item.summary.toLowerCase().includes(query));
-      return matchesCat && matchesSearch;
+      await fetch("/api/v1/google/disconnect", { method: "POST" });
+      connected = false;
+      label.textContent = "Connect Google";
     });
-
-    newsCountBadge.textContent = `${filteredNewsItems.length} TARGETS`;
-    renderFeedList();
   }
 
-  function renderFeedList() {
-    if (filteredNewsItems.length === 0) {
-      feedList.innerHTML = `
-        <div class="loading-state">
-          <p class="hud-mono">NO TARGET SIGNALS MATCHING FREQUENCY PARAMETERS.</p>
-        </div>`;
-      return;
-    }
-
-    feedList.innerHTML = filteredNewsItems
-      .map((item) => {
-        const isActive = activeNews && activeNews.id === item.id ? "active" : "";
-        const catClass = getCategoryClass(item.category);
-        const score = item.scores?.total ? Math.round(item.scores.total) : 95;
-        const source = item.primary_source_handle ? `@${item.primary_source_handle}` : "AUTHORIZED FEED";
-
-        return `
-          <div class="news-card ${isActive}" data-id="${item.id}">
-            <div class="card-meta-row">
-              <span class="cat-badge ${catClass}">${escapeHtml(item.category || "AI TARGET")}</span>
-              <span class="score-badge">⌖ ${score} PTS</span>
-            </div>
-            <div class="card-title">${escapeHtml(item.title)}</div>
-            <div class="card-summary">${escapeHtml(item.summary || item.hook || "")}</div>
-            <div class="card-footer">
-              <span class="card-source">${escapeHtml(source)}</span>
-              <div class="card-actions">
-                <button class="card-btn load-studio-btn" data-id="${item.id}">STUDIO ⬡</button>
-                <button class="card-btn deepdive-btn" data-id="${item.id}">DOSSIER ◈</button>
-              </div>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
-  }
-
-  function getCategoryClass(category = "") {
-    const c = category.toLowerCase();
-    if (c.includes("tool")) return "tool";
-    if (c.includes("frontier") || c.includes("model")) return "frontier";
-    if (c.includes("agent")) return "agent";
-    if (c.includes("robot")) return "robotics";
-    return "tool";
-  }
-
-  // ============================================================================
-  // CAROUSEL STUDIO LOGIC
-  // ============================================================================
-
-  function selectStory(item) {
-    if (!item) return;
-    activeNews = item;
-    currentSlideNum = 1;
-
-    // Update UI highlights
-    activeStoryTitle.textContent = item.title.toUpperCase();
-    chatContextLabel.textContent = `TARGET CONTEXT: ${item.title.toUpperCase()}`;
-
-    // Re-render feed to show active border
-    renderFeedList();
-
-    // Load active slide
-    loadSlide(currentSlideNum);
-
-    // Update Caption Preview
-    updateCaptionPreview(item);
-  }
-
-  function loadSlide(slideNum) {
-    if (!activeNews) return;
-    currentSlideNum = slideNum;
-
-    // Update Tabs
-    document.querySelectorAll(".slide-tab").forEach((tab) => {
-      tab.classList.toggle("active", parseInt(tab.dataset.slide) === slideNum);
-    });
-
-    // Update Dots
-    document.querySelectorAll(".slide-dots .dot").forEach((dot, idx) => {
-      dot.classList.toggle("active", idx + 1 === slideNum);
-    });
-
-    currentSlideBadge.textContent = `SLIDE: 0${slideNum} / 04`;
-
-    // Slide Context Description
-    const descriptions = [
-      {
-        title: "DIAGNOSTIC // SLIDE 01: VIRAL HOOK & HERO ARTWORK",
-        desc: activeNews.hook || activeNews.title,
-      },
-      {
-        title: "DIAGNOSTIC // SLIDE 02: SYSTEM ARCHITECTURE & MECHANISM",
-        desc: activeNews.summary || "System architecture & engineering mechanism breakdown.",
-      },
-      {
-        title: "DIAGNOSTIC // SLIDE 03: STRATEGIC TECHNICAL CAPABILITIES",
-        desc: Array.isArray(activeNews.key_bullet_points)
-          ? activeNews.key_bullet_points.join(" • ")
-          : "Essential operational capabilities.",
-      },
-      {
-        title: "DIAGNOSTIC // SLIDE 04: STRATEGIC IMPACT & CREATOR CALL TO ACTION",
-        desc: activeNews.why_it_matters || "Why it matters for creators, builders, and developers.",
-      },
-    ];
-
-    const currentDesc = descriptions[slideNum - 1] || descriptions[0];
-    slideTypeText.textContent = currentDesc.title;
-    slideContextText.textContent = currentDesc.desc;
-
-    // Load Slide Image
-    showSlideLoader(true, "ALFRED RETRIEVING HOLOGRAPHIC SLIDE MATRIX...");
-    const imgUrl = `/api/v1/carousel/${activeNews.id}/slide/${slideNum}?t=${Date.now()}`;
-
-    const tempImg = new Image();
-    tempImg.onload = () => {
-      activeSlideImg.src = imgUrl;
-      showSlideLoader(false);
-    };
-    tempImg.onerror = () => {
-      // Auto trigger generation if image is not ready yet
-      generateCarouselSlides(false);
-    };
-    tempImg.src = imgUrl;
-  }
-
-  function showSlideLoader(show, text = "") {
-    if (show) {
-      slideLoader.classList.remove("hidden");
-      if (text) slideLoaderText.textContent = text;
-    } else {
-      slideLoader.classList.add("hidden");
-    }
-  }
-
-  async function generateCarouselSlides(manualTrigger = true) {
-    if (!activeNews) return;
-    showSlideLoader(true, "ALFRED SYNTHESIZING BESPOKE 8K VISUAL ARTWORK & VECTOR SLIDES...");
-
+  async function clearMemory() {
     try {
-      const res = await fetch(`/api/v1/carousel/generate/${activeNews.id}`, {
-        method: "POST",
+      await fetch("/api/v1/alfred/memory", { method: "DELETE" });
+    } catch (e) {
+      console.warn("Could not clear memory:", e);
+    }
+    chatMessages.innerHTML = "";
+    if (heroSection) heroSection.classList.remove("hidden");
+  }
+
+  function setupInputEvents() {
+    chatInput.addEventListener("input", function () {
+      this.style.height = "auto";
+      this.style.height = Math.min(this.scrollHeight, 160) + "px";
+      sendBtn.disabled = this.value.trim().length === 0 || isGenerating;
+    });
+
+    chatInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submitQuery();
+      }
+    });
+
+    sendBtn.addEventListener("click", submitQuery);
+  }
+
+  function setupActionCards() {
+    actionCards.forEach((card) => {
+      card.addEventListener("click", () => {
+        const prompt = card.dataset.prompt;
+        if (prompt) {
+          sendPrompt(prompt);
+        }
       });
-      if (!res.ok) throw new Error("Carousel generation returned error");
-      const data = await res.json();
-      showToast("4-SLIDE HOLOGRAPHIC CAROUSEL COMPILED BY ALFRED", "⬡");
-      loadSlide(currentSlideNum);
-    } catch (err) {
-      console.error("Carousel generation error:", err);
-      showToast("SLIDE COMPILATION FAILED: " + err.message, "⚠️");
-      showSlideLoader(false);
-    }
+    });
   }
 
-  function updateCaptionPreview(item) {
-    const bullets = (item.key_bullet_points || []).map((b) => `• ${b}`).join("\n");
-    const tags = `#AI #ArtificialIntelligence #TechNews #GenerativeAI #MachineLearning #TechTrends #AshokAI #StarkTech #JARVIS`;
+  function setupHistoryDrawer() {
+    historyBtn.addEventListener("click", () => {
+      historyDrawer.classList.remove("hidden");
+      drawerBackdrop.classList.remove("hidden");
+    });
 
-    const caption = `🚨 ${item.title}\n\n${item.summary}\n\nKey Takeaways:\n${bullets}\n\n💡 Why it matters:\n${item.why_it_matters || ""}\n\nSwipe through for the full breakdown! 👉\nFollow @ashok_a.i for daily high-signal AI intelligence.\n\n${tags}`;
-
-    captionPreview.value = caption;
-  }
-
-  async function publishCarousel() {
-    if (!activeNews) return;
-    const platforms = [];
-    if (document.getElementById("pub-ig").checked) platforms.push("instagram");
-    if (document.getElementById("pub-linkedin").checked) platforms.push("linkedin");
-    if (document.getElementById("pub-x").checked) platforms.push("x");
-    if (document.getElementById("pub-yt").checked) platforms.push("youtube");
-
-    if (platforms.length === 0) {
-      showToast("SELECT AT LEAST ONE TARGET NETWORK", "⚠️");
-      return;
+    function closeDrawer() {
+      historyDrawer.classList.add("hidden");
+      drawerBackdrop.classList.add("hidden");
     }
 
-    publishBtn.disabled = true;
-    publishBtn.innerHTML = `<span>DISPATCHING...</span>`;
+    closeHistoryBtn.addEventListener("click", closeDrawer);
+    drawerBackdrop.addEventListener("click", closeDrawer);
 
-    try {
-      const res = await fetch(`/api/v1/carousel/publish/${activeNews.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platforms }),
+    historyRows.forEach((row) => {
+      row.addEventListener("click", () => {
+        const prompt = row.dataset.prompt;
+        closeDrawer();
+        if (prompt) {
+          sendPrompt(prompt);
+        }
       });
-      const data = await res.json();
-      showToast("CAROUSEL TRANSMITTED ACROSS SELECTED NETWORKS!", "▲");
-
-      // Notify in Alfred Chat
-      appendChatMessage(
-        "Alfred",
-        `Master Ashok, the transmission packet for <b>"${escapeHtml(
-          activeNews.title
-        )}"</b> has been dispatched across your specified frequency channels (${platforms.join(", ")}). Diagnostics indicate 100% signal delivery.`,
-        "alfred"
-      );
-    } catch (err) {
-      showToast("DISPATCH PROTOCOL ERROR: " + err.message, "⚠️");
-    } finally {
-      publishBtn.disabled = false;
-      publishBtn.innerHTML = `<span class="btn-reticle">▲</span><span>DISPATCH CAROUSEL</span>`;
-    }
+    });
   }
 
-  // ============================================================================
-  // ALFRED EXECUTIVE AI BUTLER CHAT (JARVIS MODE)
-  // ============================================================================
+  function setupToolButtons() {
+    attachBtn.addEventListener("click", () => {
+      sendPrompt("Alfred, summarize the current active repository context, models, and recent research findings.");
+    });
 
-  async function sendAlfredMessage(customText = null) {
-    const text = customText || alfredUserInput.value.trim();
-    if (!text) return;
+    voiceBtn.addEventListener("click", () => {
+      chatInput.placeholder = "Listening... (or type your request)";
+      setTimeout(() => {
+        chatInput.placeholder = "Type your request to Alfred...";
+      }, 3000);
+    });
+  }
 
-    // Append user message
-    appendChatMessage("Master Ashok", text, "user");
-    if (!customText) alfredUserInput.value = "";
+  function submitQuery() {
+    const text = chatInput.value.trim();
+    if (!text || isGenerating) return;
 
-    // Show Alfred Thinking & activate audio visualizer
-    setWaveformActive(true);
-    const thinkingId = appendThinkingMessage();
+    chatInput.value = "";
+    chatInput.style.height = "auto";
+    sendBtn.disabled = true;
+
+    sendPrompt(text);
+  }
+
+  async function sendPrompt(text) {
+    if (heroSection) {
+      heroSection.classList.add("hidden");
+    }
+
+    appendMessage("user", text);
+
+    isGenerating = true;
+    sendBtn.disabled = true;
+    const isImageJob = /image|carousel|slide|photo|post/i.test(text) && !/drive|gmail|email/i.test(text);
+    const thinkingId = appendThinkingBubble(
+      isImageJob ? "Alfred is creating 4 unique images (about 1-2 minutes)..." : undefined
+    );
 
     try {
       const res = await fetch("/api/v1/alfred/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: text,
-          context_news_id: activeNews ? activeNews.id : null,
-        }),
+        body: JSON.stringify({ message: text }),
       });
+
       const data = await res.json();
-      removeMessage(thinkingId);
-      appendChatMessage("Alfred", data.reply, "alfred");
+      removeElement(thinkingId);
+      appendMessage("assistant", data.reply || "At your service, Master Ashok.", data);
     } catch (err) {
-      removeMessage(thinkingId);
-      appendChatMessage(
-        "Alfred",
-        `Forgive me, Master Ashok. A momentary disruption in our neural telemetry link: ${err.message}`,
-        "alfred"
+      removeElement(thinkingId);
+      appendMessage(
+        "assistant",
+        `Forgive me, Master Ashok. A momentary disturbance in our telemetry link occurred: ${err.message}`
       );
     } finally {
-      setTimeout(() => setWaveformActive(false), 800);
+      isGenerating = false;
+      sendBtn.disabled = chatInput.value.trim().length === 0;
+      chatInput.focus();
     }
   }
 
-  async function requestDeepDive(newsId) {
-    const item = allNewsItems.find((n) => n.id === newsId) || activeNews;
-    if (!item) return;
+  function appendMessage(role, text, data) {
+    const bubble = document.createElement("div");
+    bubble.className = `chat-bubble ${role}`;
 
-    selectStory(item);
+    const formatted = formatMarkdown(text);
 
-    appendChatMessage(
-      "Master Ashok",
-      `Alfred, compile an executive intelligence briefing on "${item.title}".`,
-      "user"
-    );
-
-    setWaveformActive(true);
-    const thinkingId = appendThinkingMessage();
-
-    try {
-      const res = await fetch(`/api/v1/alfred/deepdive/${item.id}`, {
-        method: "POST",
-      });
-      const data = await res.json();
-      removeMessage(thinkingId);
-      appendChatMessage("Alfred", data.briefing, "alfred");
-    } catch (err) {
-      removeMessage(thinkingId);
-      appendChatMessage(
-        "Alfred",
-        `Pardon me, Sir, but our neural intelligence servers encountered an anomaly: ${err.message}`,
-        "alfred"
-      );
-    } finally {
-      setTimeout(() => setWaveformActive(false), 800);
-    }
-  }
-
-  function appendChatMessage(sender, content, role = "alfred") {
-    const msgDiv = document.createElement("div");
-    msgDiv.className = `chat-msg ${role}`;
-
-    // Format newlines and markdown-like bold/lists
-    let formatted = content
-      .replace(/\n\n/g, "<br><br>")
-      .replace(/\n/g, "<br>")
-      .replace(/\*\*(.*?)\*\*/g, "<b>$1</b>");
-
-    if (role === "alfred") {
-      msgDiv.innerHTML = `
-        <div class="msg-avatar">
-          <div class="avatar-ring"></div>
-          <span>🎩</span>
+    if (role === "assistant") {
+      bubble.innerHTML = `
+        <div class="bubble-avatar">
+          <img class="avatar-logo-img" src="logo.png" alt="Alfred">
         </div>
-        <div class="msg-content">
-          <div class="msg-sender">
-            <span>ALFRED PENNYWORTH</span>
-            <span class="sender-tag">WAYNE-STARK OS</span>
-          </div>
-          <div>${formatted}</div>
+        <div class="bubble-body">
+          <div class="bubble-sender">Alfred</div>
+          <div class="bubble-text">${formatted}</div>
         </div>
       `;
     } else {
-      msgDiv.innerHTML = `
-        <div class="msg-content">
-          <div>${formatted}</div>
+      bubble.innerHTML = `
+        <div class="bubble-body">
+          <div class="bubble-text">${escapeHtml(text)}</div>
         </div>
       `;
     }
 
-    alfredChatBox.appendChild(msgDiv);
-    alfredChatBox.scrollTop = alfredChatBox.scrollHeight;
+    if (role === "assistant" && data) {
+      renderExtras(bubble.querySelector(".bubble-body"), data);
+    }
+
+    chatMessages.appendChild(bubble);
+    scrollToBottom();
   }
 
-  function appendThinkingMessage() {
+  // Renders structured payloads (carousel slides, digest buttons) under a reply
+  function renderExtras(body, data) {
+    if (data.action === "carousel" && Array.isArray(data.slides)) {
+      const block = document.createElement("div");
+      block.className = "carousel-block";
+
+      const grid = document.createElement("div");
+      grid.className = "slide-grid";
+      data.slides.forEach((url, i) => {
+        const link = document.createElement("a");
+        link.href = url;
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          openLightbox(data.slides, i);
+        });
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = `Slide ${i + 1}`;
+        img.addEventListener("load", scrollToBottom);
+        link.appendChild(img);
+        grid.appendChild(link);
+      });
+      block.appendChild(grid);
+
+      if (data.caption) {
+        const cap = document.createElement("div");
+        cap.className = "caption-box";
+        cap.textContent = data.caption;
+        block.appendChild(cap);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "msg-actions";
+      if (data.caption) {
+        actions.appendChild(makeButton("Copy caption", false, async (btn) => {
+          await navigator.clipboard.writeText(data.caption);
+          btn.textContent = "Copied";
+        }));
+      }
+      const platforms = [["instagram", "Instagram"], ["linkedin", "LinkedIn"], ["youtube", "YouTube Short"]];
+      const picker = document.createElement("div");
+      picker.className = "platform-picker";
+      platforms.forEach(([value, name]) => {
+        const label = document.createElement("label");
+        label.className = "platform-option";
+        label.innerHTML = `<input type="checkbox" value="${value}" checked> <span>${name}</span>`;
+        picker.appendChild(label);
+      });
+
+      const status = document.createElement("div");
+      status.className = "publish-status";
+
+      const publishBtn = makeButton("Publish", true, async (btn) => {
+        const selected = [...picker.querySelectorAll("input:checked")].map((c) => c.value);
+        if (!selected.length) {
+          status.textContent = "Select at least one platform.";
+          return;
+        }
+        btn.disabled = true;
+        btn.textContent = "Publishing...";
+        status.textContent = "";
+        try {
+          const res = await fetch(`/api/v1/carousel/publish/${data.news_id}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ platforms: selected }),
+          });
+          const results = (await res.json()).results || {};
+          status.innerHTML = selected.map((p) => {
+            const name = platforms.find(([v]) => v === p)[1];
+            const r = results[p] || {};
+            if (r.status === "success") {
+              return r.url
+                ? `${escapeHtml(name)}: posted (<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">view</a>)`
+                : `${escapeHtml(name)}: posted`;
+            }
+            return `${escapeHtml(name)}: ${escapeHtml(r.message || r.status || "error")}`;
+          }).join("<br>");
+        } catch (e) {
+          status.textContent = `Publish failed: ${e.message}`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Publish";
+        }
+      });
+
+      actions.appendChild(picker);
+      actions.appendChild(publishBtn);
+      block.appendChild(actions);
+      block.appendChild(status);
+      body.appendChild(block);
+    }
+
+    if (data.action === "workspace" && Array.isArray(data.cards)) {
+      const files = data.cards.filter((c) => c.type === "file");
+      if (files.length) {
+        const actions = document.createElement("div");
+        actions.className = "msg-actions";
+        files.forEach((f) => {
+          const a = document.createElement("a");
+          a.className = "msg-action-btn primary";
+          a.href = f.download_url;
+          a.textContent = `Download ${f.name}`;
+          actions.appendChild(a);
+        });
+        body.appendChild(actions);
+      }
+    }
+
+    if (data.action === "news_digest" && Array.isArray(data.items) && data.items.length) {
+      const actions = document.createElement("div");
+      actions.className = "msg-actions";
+      data.items.forEach((item, i) => {
+        actions.appendChild(makeButton(`Images for #${i + 1}`, false, () => {
+          if (!isGenerating) sendPrompt(`generate images for ${i + 1}`);
+        }));
+        actions.appendChild(makeButton(`Video for #${i + 1}`, false, () => {
+          if (!isGenerating) sendPrompt(`generate video for ${i + 1}`);
+        }));
+      });
+      body.appendChild(actions);
+    }
+  }
+
+  // In-page slide viewer with prev/next arrows and keyboard support
+  const lightbox = { el: null, img: null, counter: null, slides: [], index: 0 };
+
+  function buildLightbox() {
+    const el = document.createElement("div");
+    el.className = "lightbox hidden";
+    el.innerHTML = `
+      <button class="lightbox-close" title="Close (Esc)">&times;</button>
+      <button class="lightbox-nav prev" title="Previous (Left arrow)">&#8249;</button>
+      <img class="lightbox-img" alt="Slide preview">
+      <button class="lightbox-nav next" title="Next (Right arrow)">&#8250;</button>
+      <div class="lightbox-counter"></div>
+    `;
+    document.body.appendChild(el);
+    lightbox.el = el;
+    lightbox.img = el.querySelector(".lightbox-img");
+    lightbox.counter = el.querySelector(".lightbox-counter");
+    el.querySelector(".lightbox-close").addEventListener("click", closeLightbox);
+    el.querySelector(".prev").addEventListener("click", () => stepLightbox(-1));
+    el.querySelector(".next").addEventListener("click", () => stepLightbox(1));
+    el.addEventListener("click", (e) => {
+      if (e.target === el) closeLightbox();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (el.classList.contains("hidden")) return;
+      if (e.key === "Escape") closeLightbox();
+      if (e.key === "ArrowLeft") stepLightbox(-1);
+      if (e.key === "ArrowRight") stepLightbox(1);
+    });
+  }
+
+  function openLightbox(slides, index) {
+    if (!lightbox.el) buildLightbox();
+    lightbox.slides = slides;
+    lightbox.index = index;
+    renderLightbox();
+    lightbox.el.classList.remove("hidden");
+  }
+
+  function closeLightbox() {
+    lightbox.el.classList.add("hidden");
+  }
+
+  function stepLightbox(delta) {
+    const n = lightbox.slides.length;
+    lightbox.index = (lightbox.index + delta + n) % n;
+    renderLightbox();
+  }
+
+  function renderLightbox() {
+    const n = lightbox.slides.length;
+    lightbox.img.src = lightbox.slides[lightbox.index];
+    lightbox.counter.textContent = `${lightbox.index + 1} / ${n}`;
+    lightbox.el.querySelectorAll(".lightbox-nav").forEach((b) => (b.hidden = n < 2));
+  }
+
+  function makeButton(label, primary, onClick) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "msg-action-btn" + (primary ? " primary" : "");
+    btn.textContent = label;
+    btn.addEventListener("click", () => onClick(btn));
+    return btn;
+  }
+
+  function appendThinkingBubble(label = "Alfred is formulating response...") {
     const id = "thinking-" + Date.now();
-    const msgDiv = document.createElement("div");
-    msgDiv.id = id;
-    msgDiv.className = "chat-msg alfred";
-    msgDiv.innerHTML = `
-      <div class="msg-avatar">
-        <div class="avatar-ring"></div>
-        <span>🎩</span>
+    const bubble = document.createElement("div");
+    bubble.id = id;
+    bubble.className = "chat-bubble assistant";
+    bubble.innerHTML = `
+      <div class="bubble-avatar">
+        <img class="avatar-logo-img" src="logo.png" alt="Alfred">
       </div>
-      <div class="msg-content">
-        <div class="msg-sender">
-          <span>ALFRED PENNYWORTH</span>
-          <span class="sender-tag">PROCESSING TELEMETRY</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:8px;">
-          <div class="arc-spinner" style="width:14px; height:14px;"></div>
-          <span style="font-size:0.75rem; color:var(--holo-gold)" class="hud-mono">ALFRED IS FORMULATING AN EXECUTIVE BRIEFING...</span>
+      <div class="bubble-body">
+        <div class="bubble-sender">Alfred</div>
+        <div class="thinking-state">
+          <div class="spinner"></div>
+          <span>${escapeHtml(label)}</span>
         </div>
       </div>
     `;
-    alfredChatBox.appendChild(msgDiv);
-    alfredChatBox.scrollTop = alfredChatBox.scrollHeight;
+    chatMessages.appendChild(bubble);
+    scrollToBottom();
     return id;
   }
 
-  function removeMessage(id) {
+  function removeElement(id) {
     const el = document.getElementById(id);
     if (el) el.remove();
   }
 
-  // ============================================================================
-  // SCAN ORCHESTRATION
-  // ============================================================================
-
-  async function triggerFullScan() {
-    scanBtn.disabled = true;
-    scanBtn.innerHTML = `
-      <div class="arc-spinner" style="width:14px; height:14px;"></div>
-      <span class="btn-text">SWEEPING 18 SOURCES...</span>
-    `;
-
-    showToast("ALFRED HAS INITIATED AUTONOMOUS RADAR SWEEP ACROSS 18 AI FEEDS...", "⌖", 4000);
-    setWaveformActive(true);
-
-    try {
-      const res = await fetch("/api/v1/research/scan", { method: "POST" });
-      const data = await res.json();
-      await fetchNews();
-      showToast(data.message || "RADAR SWEEP COMPLETE. TARGETS RE-RANKED.", "◈", 5000);
-
-      appendChatMessage(
-        "Alfred",
-        `Master Ashok, the radar sweep across all eighteen authorized channels is complete. We have synthesized ${data.count} high-priority intelligence targets for your inspection.`,
-        "alfred"
-      );
-    } catch (err) {
-      showToast("RADAR SWEEP ANOMALY: " + err.message, "⚠️");
-    } finally {
-      scanBtn.disabled = false;
-      scanBtn.innerHTML = `
-        <span class="btn-reticle">⌖</span>
-        <span class="btn-text">SWEEP 18 SOURCES</span>
-        <span class="btn-glitch-border"></span>
-      `;
-      setTimeout(() => setWaveformActive(false), 800);
-    }
+  function scrollToBottom() {
+    chatWorkspace.scrollTop = chatWorkspace.scrollHeight;
   }
 
-  // ============================================================================
-  // EVENT LISTENERS
-  // ============================================================================
-
-  function setupEventListeners() {
-    // Scan button
-    scanBtn.addEventListener("click", triggerFullScan);
-
-    // Search & Filter
-    newsSearch.addEventListener("input", applyFilters);
-
-    categoryFilters.addEventListener("click", (e) => {
-      const chip = e.target.closest(".filter-chip");
-      if (!chip) return;
-      document.querySelectorAll(".filter-chip").forEach((c) => c.classList.remove("active"));
-      chip.classList.add("active");
-      activeCategory = chip.dataset.category;
-      applyFilters();
-    });
-
-    // Feed delegation
-    feedList.addEventListener("click", (e) => {
-      const studioBtn = e.target.closest(".load-studio-btn");
-      const deepdiveBtn = e.target.closest(".deepdive-btn");
-      const card = e.target.closest(".news-card");
-
-      if (deepdiveBtn) {
-        e.stopPropagation();
-        requestDeepDive(deepdiveBtn.dataset.id);
-        return;
-      }
-
-      if (studioBtn) {
-        e.stopPropagation();
-        const item = allNewsItems.find((n) => n.id === studioBtn.dataset.id);
-        if (item) selectStory(item);
-        return;
-      }
-
-      if (card) {
-        const item = allNewsItems.find((n) => n.id === card.dataset.id);
-        if (item) selectStory(item);
-      }
-    });
-
-    // Slide switcher tabs
-    slideTabs.addEventListener("click", (e) => {
-      const tab = e.target.closest(".slide-tab");
-      if (!tab) return;
-      loadSlide(parseInt(tab.dataset.slide));
-    });
-
-    // Prev / Next
-    prevSlideBtn.addEventListener("click", () => {
-      let next = currentSlideNum - 1;
-      if (next < 1) next = 4;
-      loadSlide(next);
-    });
-
-    nextSlideBtn.addEventListener("click", () => {
-      let next = currentSlideNum + 1;
-      if (next > 4) next = 1;
-      loadSlide(next);
-    });
-
-    // Keyboard navigation
-    window.addEventListener("keydown", (e) => {
-      if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
-      if (e.key === "ArrowLeft") prevSlideBtn.click();
-      if (e.key === "ArrowRight") nextSlideBtn.click();
-    });
-
-    // Re-render carousel
-    regenCarouselBtn.addEventListener("click", () => generateCarouselSlides(true));
-
-    // Copy caption
-    copyCaptionBtn.addEventListener("click", () => {
-      navigator.clipboard.writeText(captionPreview.value).then(() => {
-        showToast("CAPTION PROTOCOL COPIED TO CLIPBOARD", "⧉");
-      });
-    });
-
-    // Publish carousel
-    publishBtn.addEventListener("click", publishCarousel);
-
-    // Alfred prompt chips
-    alfredChips.addEventListener("click", (e) => {
-      const chip = e.target.closest(".chip");
-      if (!chip) return;
-      sendAlfredMessage(chip.dataset.prompt);
-    });
-
-    // Alfred chat send
-    alfredSendBtn.addEventListener("click", () => sendAlfredMessage());
-    alfredUserInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        sendAlfredMessage();
-      }
-    });
+  function formatMarkdown(text) {
+    if (!text) return "";
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.*?)\*/g, "<em>$1</em>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/(?:^|\n)\s*---\s*(?:\n|$)/g, '<hr class="news-divider">')
+      .replace(/\n\n/g, "</p><p>")
+      .replace(/\n/g, "<br>");
   }
 
   function escapeHtml(str) {
@@ -622,6 +473,5 @@
       .replace(/'/g, "&#039;");
   }
 
-  // Launch on DOM ready
   document.addEventListener("DOMContentLoaded", init);
 })();

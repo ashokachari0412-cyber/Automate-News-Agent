@@ -1,6 +1,6 @@
 """Automated News Pipeline Scheduler (Containerized Service).
 
-Periodically triggers strict 24h AI news scanning, ranking, and Telegram card dispatch
+Periodically triggers strict 24h AI news scanning and ranking
 during configured active hours.
 """
 
@@ -15,8 +15,7 @@ from rich.console import Console
 
 from config.settings import settings
 from src.agents.research_graph import run_research_workflow
-from src.telegram.bot_service import bot_service
-from src.telegram.notifier import TelegramNotifier
+from src.storage import merge_news
 
 logger = logging.getLogger("pipeline_scheduler")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -24,10 +23,9 @@ console = Console(legacy_windows=False)
 
 
 class PipelineScheduler:
-    """Autonomous scheduler for 24h AI news scanning & Telegram dispatch."""
+    """Autonomous scheduler for 24h AI news scanning & caching."""
 
     def __init__(self):
-        self.notifier = TelegramNotifier()
         self.is_running = False
         self.interval_seconds = max(settings.SCHEDULE_INTERVAL_HOURS, 1) * 3600
         self.run_on_startup = settings.SCHEDULE_RUN_ON_STARTUP
@@ -62,19 +60,8 @@ class PipelineScheduler:
                 f"Found {len(result.items)} prioritized news items.[/]"
             )
 
-            # Cache items so Telegram Bot container can access them via shared volume
-            bot_service.cache_news(result.items)
-
-            # Send clean news cards to Telegram
-            if self.notifier.is_configured() and result.items:
-                console.print(f"[cyan]🚀 Dispatching {len(result.items)} news updates to Telegram...[/]")
-                sent = await self.notifier.send_ranking_digest(result)
-                if sent:
-                    console.print("[bold green]✅ News digest successfully sent to Telegram![/]")
-                else:
-                    console.print("[red]❌ Failed to send digest to Telegram.[/]")
-            else:
-                console.print("[dim]Telegram not configured or no items found.[/]")
+            # Persist items so the web app picks them up
+            merge_news(result.items)
 
         except Exception as e:
             logger.error(f"Error during scheduled scan: {e}", exc_info=True)

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # Google Gemini Settings (Google AI Pro)
     GEMINI_API_KEY: Optional[str] = Field(default=None)
     GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image"
 
     # News & Research Collection (100% Authorized AI Lab Feeds + Hugging Face)
     COLLECTOR_MODE: Literal["authorized", "auto", "playwright", "syndication", "mock"] = "authorized"
@@ -55,13 +56,21 @@ class Settings(BaseSettings):
     HEYGEN_AVATAR_ID: str = "0c8510c2f7ad4b96a5193bb7ce4c18a2"
     HEYGEN_VOICE_ID: Optional[str] = Field(default=None)
 
-    # Telegram (Human-in-the-Loop Review)
-    TELEGRAM_BOT_TOKEN: Optional[str] = Field(default=None)
-    TELEGRAM_CHAT_ID: Optional[str] = Field(default=None)
-    ENABLE_EMBEDDED_BOT: bool = Field(default=True)
-
     # Slack (Optional Webhook)
     SLACK_WEBHOOK_URL: Optional[str] = Field(default=None)
+
+    # LinkedIn (Posts API, token needs w_member_social + openid/profile scopes)
+    LINKEDIN_ACCESS_TOKEN: Optional[str] = Field(default=None)
+    LINKEDIN_AUTHOR_URN: Optional[str] = Field(default=None)  # auto-detected if empty
+    LINKEDIN_API_VERSION: str = "202509"
+
+    # YouTube Shorts (uses the Google OAuth connection below)
+    YOUTUBE_PRIVACY: str = "public"  # public | unlisted | private
+
+    # Google Workspace OAuth (Drive / Calendar / Gmail tools)
+    GOOGLE_CLIENT_ID: Optional[str] = Field(default=None)
+    GOOGLE_CLIENT_SECRET: Optional[str] = Field(default=None)
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/google/callback"
 
     # Instagram Direct Auto-Posting (instagrapi)
     INSTAGRAM_USERNAME: Optional[str] = Field(default=None)

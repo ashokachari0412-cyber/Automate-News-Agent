@@ -23,8 +23,7 @@ from config.settings import settings
 from src.collectors.factory import get_collector
 from src.agents.research_graph import run_research_workflow
 from src.notifiers.slack_notifier import SlackNotifier
-from src.telegram.bot_service import bot_service
-from src.telegram.notifier import TelegramNotifier
+from src.storage import merge_news
 
 console = Console(legacy_windows=False)
 
@@ -32,7 +31,7 @@ console = Console(legacy_windows=False)
 def show_banner():
     banner = Text()
     banner.append("[Google AI] Personal AI Content Agent\n", style="bold cyan")
-    banner.append("Strict 24h AI News Detection -> Telegram Human-in-the-Loop -> 35-40s Video Gen\n", style="bold white")
+    banner.append("Strict 24h AI News Detection -> Prioritized Digest -> Image Carousels (Web App)\n", style="bold white")
     banner.append(f"Orchestrator: LangGraph + FastAPI | LLM: Google Gemini ({settings.GEMINI_MODEL})", style="dim")
     console.print(Panel(banner, border_style="cyan", box=box.ROUNDED))
 
@@ -95,15 +94,15 @@ async def test_collector_cmd():
     console.print(table)
 
 
-async def run_pipeline_cmd(send_telegram: bool = False, send_slack: bool = False, listen: bool = True):
+async def run_pipeline_cmd(send_slack: bool = False):
     """Execute end-to-end AI Research and Prioritization agent."""
     console.print("\n[bold green]>> Scanning for breaking AI news strictly from the last 24 hours...[/]")
 
     with console.status("[bold cyan]Gathering tweets, checking 24h timestamp, and evaluating with Gemini...", spinner="dots"):
         result = await run_research_workflow()
 
-    # Cache news in bot service for instant interactive button handling
-    bot_service.cache_news(result.items)
+    # Persist news so the web app can use it
+    merge_news(result.items)
 
     console.print(f"\n[bold green]OK: Pipeline completed in {result.execution_time_seconds}s![/]")
     console.print(
@@ -128,8 +127,6 @@ async def run_pipeline_cmd(send_telegram: bool = False, send_slack: bool = False
         panel_content.append("\nWhy It Matters:\n", style="bold underline")
         panel_content.append(f"{item.why_it_matters}\n\n", style="dim")
 
-        panel_content.append("Ready for Video:\n", style="bold magenta")
-        panel_content.append("Tap [Generate Video for This] in Telegram to create 5s test short\n", style="italic")
 
         if item.source_urls:
             panel_content.append(f"\nSource: {item.source_urls[0]}", style="dim blue")
@@ -165,36 +162,6 @@ async def run_pipeline_cmd(send_telegram: bool = False, send_slack: bool = False
         else:
             console.print("[yellow]Notice: Slack webhook not set in .env. Skipping push.[/]")
 
-    # Push to Telegram if requested
-    if send_telegram:
-        notifier = TelegramNotifier()
-        if notifier.is_configured():
-            console.print("[yellow]Dispatching clean news cards to Telegram...[/]")
-            sent = await notifier.send_ranking_digest(result)
-            if sent:
-                console.print("[green]OK: Successfully sent to Telegram![/]")
-                if listen:
-                    console.print("\n[bold cyan]🤖 Entering live Telegram Bot mode...[/]")
-                    console.print("[dim]Tap '[🎬 Generate Video for This]' in Telegram to test your 5-second video blueprint & render.[/]")
-                    console.print("[dim](Press Ctrl+C to stop)[/]\n")
-                    try:
-                        await bot_service.start_polling()
-                    except (KeyboardInterrupt, asyncio.CancelledError):
-                        console.print("\n[yellow]Bot listener stopped.[/]")
-            else:
-                console.print("[red]FAIL: Failed to send to Telegram.[/]")
-        else:
-            console.print("[yellow]Notice: Telegram credentials not set in .env. Skipping push.[/]")
-
-
-def start_bot_listener():
-    """Start interactive Telegram Bot listener for button clicks and video generation."""
-    console.print("\n[bold green]🤖 Starting Telegram Bot Listener for button interactions...[/]")
-    console.print("[dim]Tap '[🎬 Generate Video for This]' in Telegram to generate scripts & videos in real time.[/]")
-    try:
-        asyncio.run(bot_service.start_polling())
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        console.print("\n[yellow]Bot listener stopped.[/]")
 
 
 def main():
@@ -203,13 +170,8 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # run command
-    run_parser = subparsers.add_parser("run", help="Run news research & send clean news to Telegram")
-    run_parser.add_argument("--telegram", action="store_true", help="Send results to Telegram")
+    run_parser = subparsers.add_parser("run", help="Run news research and print the prioritized digest")
     run_parser.add_argument("--slack", action="store_true", help="Send results to Slack")
-    run_parser.add_argument("--no-listen", action="store_true", help="Do not wait for Telegram button clicks after sending")
-
-    # bot command (interactive listener)
-    subparsers.add_parser("bot", help="Run Telegram bot listener for interactive button clicks & video gen")
 
     # accounts command
     subparsers.add_parser("accounts", help="List trusted Twitter accounts")
@@ -231,8 +193,6 @@ def main():
         list_accounts_cmd()
     elif args.command == "test-collector":
         asyncio.run(test_collector_cmd())
-    elif args.command == "bot":
-        start_bot_listener()
     elif args.command == "scheduler":
         from src.scheduler import main as run_scheduler
         asyncio.run(run_scheduler())
@@ -240,10 +200,7 @@ def main():
         import uvicorn
         uvicorn.run("src.api.main:app", host=args.host, port=args.port, reload=True)
     elif args.command == "run" or args.command is None:
-        send_tele = getattr(args, "telegram", False)
-        send_sl = getattr(args, "slack", False)
-        no_listen = getattr(args, "no_listen", False)
-        asyncio.run(run_pipeline_cmd(send_telegram=send_tele, send_slack=send_sl, listen=not no_listen))
+        asyncio.run(run_pipeline_cmd(send_slack=getattr(args, "slack", False)))
 
 
 if __name__ == "__main__":
