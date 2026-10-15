@@ -1,5 +1,5 @@
 /**
- * ALFRED // Wayne Tech Executive AI Intelligence & Content Studio
+ * ALFRED // STARK-HUD TONY STARK JARVIS AI SYSTEM
  * Client Application Logic
  */
 
@@ -42,6 +42,7 @@
   const alfredSendBtn = document.getElementById("alfred-send-btn");
   const chatContextLabel = document.getElementById("chat-context-label");
   const alfredChips = document.getElementById("alfred-chips");
+  const waveformBar = document.getElementById("jarvis-waveform-bar");
 
   // Toast
   const toast = document.getElementById("toast");
@@ -65,7 +66,7 @@
     setInterval(update, 1000);
   }
 
-  function showToast(message, icon = "⚡", duration = 3500) {
+  function showToast(message, icon = "◈", duration = 3500) {
     if (toastTimer) clearTimeout(toastTimer);
     toastIcon.textContent = icon;
     toastMsg.textContent = message;
@@ -73,6 +74,15 @@
     toastTimer = setTimeout(() => {
       toast.classList.add("hidden");
     }, duration);
+  }
+
+  function setWaveformActive(active = true) {
+    if (!waveformBar) return;
+    const bars = waveformBar.querySelectorAll(".wave-bar");
+    bars.forEach((b) => {
+      b.style.animationDuration = active ? "0.4s" : "1.2s";
+      b.style.filter = active ? "brightness(1.8)" : "none";
+    });
   }
 
   // ============================================================================
@@ -93,8 +103,8 @@
       console.error("Fetch news error:", err);
       feedList.innerHTML = `
         <div class="loading-state">
-          <p style="color: var(--accent-red)">⚠️ Neural feed offline. Reconnecting...</p>
-          <button class="btn btn-secondary btn-sm" onclick="location.reload()">Retry Link</button>
+          <p style="color: var(--holo-red)" class="hud-mono">⚠️ NEURAL LINK OFFLINE. RECONNECTING...</p>
+          <button class="hud-btn hud-btn-secondary" onclick="location.reload()">RE-ENGAGE LINK</button>
         </div>`;
     }
   }
@@ -112,7 +122,7 @@
       return matchesCat && matchesSearch;
     });
 
-    newsCountBadge.textContent = `${filteredNewsItems.length} stories`;
+    newsCountBadge.textContent = `${filteredNewsItems.length} TARGETS`;
     renderFeedList();
   }
 
@@ -120,7 +130,7 @@
     if (filteredNewsItems.length === 0) {
       feedList.innerHTML = `
         <div class="loading-state">
-          <p>No stories matching current parameters.</p>
+          <p class="hud-mono">NO TARGET SIGNALS MATCHING FREQUENCY PARAMETERS.</p>
         </div>`;
       return;
     }
@@ -130,21 +140,21 @@
         const isActive = activeNews && activeNews.id === item.id ? "active" : "";
         const catClass = getCategoryClass(item.category);
         const score = item.scores?.total ? Math.round(item.scores.total) : 95;
-        const source = item.primary_source_handle ? `@${item.primary_source_handle}` : "Authorized Feed";
+        const source = item.primary_source_handle ? `@${item.primary_source_handle}` : "AUTHORIZED FEED";
 
         return `
           <div class="news-card ${isActive}" data-id="${item.id}">
             <div class="card-meta-row">
-              <span class="cat-badge ${catClass}">${escapeHtml(item.category || "AI Update")}</span>
-              <span class="score-badge">⚡ ${score} pts</span>
+              <span class="cat-badge ${catClass}">${escapeHtml(item.category || "AI TARGET")}</span>
+              <span class="score-badge">⌖ ${score} PTS</span>
             </div>
             <div class="card-title">${escapeHtml(item.title)}</div>
             <div class="card-summary">${escapeHtml(item.summary || item.hook || "")}</div>
             <div class="card-footer">
               <span class="card-source">${escapeHtml(source)}</span>
               <div class="card-actions">
-                <button class="card-btn load-studio-btn" data-id="${item.id}">Studio 🎨</button>
-                <button class="card-btn deepdive-btn" data-id="${item.id}">Briefing 🎩</button>
+                <button class="card-btn load-studio-btn" data-id="${item.id}">STUDIO ⬡</button>
+                <button class="card-btn deepdive-btn" data-id="${item.id}">DOSSIER ◈</button>
               </div>
             </div>
           </div>
@@ -172,8 +182,8 @@
     currentSlideNum = 1;
 
     // Update UI highlights
-    activeStoryTitle.textContent = item.title;
-    chatContextLabel.textContent = `Context: ${item.title}`;
+    activeStoryTitle.textContent = item.title.toUpperCase();
+    chatContextLabel.textContent = `TARGET CONTEXT: ${item.title.toUpperCase()}`;
 
     // Re-render feed to show active border
     renderFeedList();
@@ -199,26 +209,26 @@
       dot.classList.toggle("active", idx + 1 === slideNum);
     });
 
-    currentSlideBadge.textContent = `Slide 0${slideNum} of 04`;
+    currentSlideBadge.textContent = `SLIDE: 0${slideNum} / 04`;
 
     // Slide Context Description
     const descriptions = [
       {
-        title: "SLIDE 1 // VIRAL HOOK & BESPOKE AI HERO",
+        title: "DIAGNOSTIC // SLIDE 01: VIRAL HOOK & HERO ARTWORK",
         desc: activeNews.hook || activeNews.title,
       },
       {
-        title: "SLIDE 2 // SYSTEM ARCHITECTURE & BREAKDOWN",
+        title: "DIAGNOSTIC // SLIDE 02: SYSTEM ARCHITECTURE & MECHANISM",
         desc: activeNews.summary || "System architecture & engineering mechanism breakdown.",
       },
       {
-        title: "SLIDE 3 // KEY STRATEGIC TAKEAWAYS",
+        title: "DIAGNOSTIC // SLIDE 03: STRATEGIC TECHNICAL CAPABILITIES",
         desc: Array.isArray(activeNews.key_bullet_points)
           ? activeNews.key_bullet_points.join(" • ")
           : "Essential operational capabilities.",
       },
       {
-        title: "SLIDE 4 // STRATEGIC ACTION & CREATOR CTA",
+        title: "DIAGNOSTIC // SLIDE 04: STRATEGIC IMPACT & CREATOR CALL TO ACTION",
         desc: activeNews.why_it_matters || "Why it matters for creators, builders, and developers.",
       },
     ];
@@ -228,7 +238,7 @@
     slideContextText.textContent = currentDesc.desc;
 
     // Load Slide Image
-    showSlideLoader(true, "Alfred is preparing visual slide...");
+    showSlideLoader(true, "ALFRED RETRIEVING HOLOGRAPHIC SLIDE MATRIX...");
     const imgUrl = `/api/v1/carousel/${activeNews.id}/slide/${slideNum}?t=${Date.now()}`;
 
     const tempImg = new Image();
@@ -254,7 +264,7 @@
 
   async function generateCarouselSlides(manualTrigger = true) {
     if (!activeNews) return;
-    showSlideLoader(true, "Alfred is generating bespoke 8K visual artwork & typesetting slides...");
+    showSlideLoader(true, "ALFRED SYNTHESIZING BESPOKE 8K VISUAL ARTWORK & VECTOR SLIDES...");
 
     try {
       const res = await fetch(`/api/v1/carousel/generate/${activeNews.id}`, {
@@ -262,18 +272,18 @@
       });
       if (!res.ok) throw new Error("Carousel generation returned error");
       const data = await res.json();
-      showToast("4-Slide Carousel successfully rendered by Alfred", "🎨");
+      showToast("4-SLIDE HOLOGRAPHIC CAROUSEL COMPILED BY ALFRED", "⬡");
       loadSlide(currentSlideNum);
     } catch (err) {
       console.error("Carousel generation error:", err);
-      showToast("Failed to render slides: " + err.message, "⚠️");
+      showToast("SLIDE COMPILATION FAILED: " + err.message, "⚠️");
       showSlideLoader(false);
     }
   }
 
   function updateCaptionPreview(item) {
     const bullets = (item.key_bullet_points || []).map((b) => `• ${b}`).join("\n");
-    const tags = `#AI #ArtificialIntelligence #TechNews #GenerativeAI #MachineLearning #TechTrends #AshokAI #WayneTech`;
+    const tags = `#AI #ArtificialIntelligence #TechNews #GenerativeAI #MachineLearning #TechTrends #AshokAI #StarkTech #JARVIS`;
 
     const caption = `🚨 ${item.title}\n\n${item.summary}\n\nKey Takeaways:\n${bullets}\n\n💡 Why it matters:\n${item.why_it_matters || ""}\n\nSwipe through for the full breakdown! 👉\nFollow @ashok_a.i for daily high-signal AI intelligence.\n\n${tags}`;
 
@@ -289,12 +299,12 @@
     if (document.getElementById("pub-yt").checked) platforms.push("youtube");
 
     if (platforms.length === 0) {
-      showToast("Please select at least one publishing platform", "⚠️");
+      showToast("SELECT AT LEAST ONE TARGET NETWORK", "⚠️");
       return;
     }
 
     publishBtn.disabled = true;
-    publishBtn.innerHTML = `<span>Dispatching...</span>`;
+    publishBtn.innerHTML = `<span>DISPATCHING...</span>`;
 
     try {
       const res = await fetch(`/api/v1/carousel/publish/${activeNews.id}`, {
@@ -303,26 +313,26 @@
         body: JSON.stringify({ platforms }),
       });
       const data = await res.json();
-      showToast("Intelligence carousel dispatched across selected channels!", "🚀");
+      showToast("CAROUSEL TRANSMITTED ACROSS SELECTED NETWORKS!", "▲");
 
       // Notify in Alfred Chat
       appendChatMessage(
         "Alfred",
-        `Master Ashok, I have dispatched the 4-slide carousel for <b>"${escapeHtml(
+        `Master Ashok, the transmission packet for <b>"${escapeHtml(
           activeNews.title
-        )}"</b> to your selected networks (${platforms.join(", ")}). The transmission report is logged.`,
+        )}"</b> has been dispatched across your specified frequency channels (${platforms.join(", ")}). Diagnostics indicate 100% signal delivery.`,
         "alfred"
       );
     } catch (err) {
-      showToast("Publish error: " + err.message, "⚠️");
+      showToast("DISPATCH PROTOCOL ERROR: " + err.message, "⚠️");
     } finally {
       publishBtn.disabled = false;
-      publishBtn.innerHTML = `<span class="btn-icon">🚀</span><span>Publish Carousel</span>`;
+      publishBtn.innerHTML = `<span class="btn-reticle">▲</span><span>DISPATCH CAROUSEL</span>`;
     }
   }
 
   // ============================================================================
-  // ALFRED EXECUTIVE AI BUTLER CHAT
+  // ALFRED EXECUTIVE AI BUTLER CHAT (JARVIS MODE)
   // ============================================================================
 
   async function sendAlfredMessage(customText = null) {
@@ -333,7 +343,8 @@
     appendChatMessage("Master Ashok", text, "user");
     if (!customText) alfredUserInput.value = "";
 
-    // Show Alfred Thinking
+    // Show Alfred Thinking & activate audio visualizer
+    setWaveformActive(true);
     const thinkingId = appendThinkingMessage();
 
     try {
@@ -352,9 +363,11 @@
       removeMessage(thinkingId);
       appendChatMessage(
         "Alfred",
-        `My sincere apologies, Master Ashok. A momentary static in our neural uplink: ${err.message}`,
+        `Forgive me, Master Ashok. A momentary disruption in our neural telemetry link: ${err.message}`,
         "alfred"
       );
+    } finally {
+      setTimeout(() => setWaveformActive(false), 800);
     }
   }
 
@@ -366,10 +379,11 @@
 
     appendChatMessage(
       "Master Ashok",
-      `Alfred, I require an executive intelligence breakdown on "${item.title}".`,
+      `Alfred, compile an executive intelligence briefing on "${item.title}".`,
       "user"
     );
 
+    setWaveformActive(true);
     const thinkingId = appendThinkingMessage();
 
     try {
@@ -383,9 +397,11 @@
       removeMessage(thinkingId);
       appendChatMessage(
         "Alfred",
-        `Pardon me, Sir, but our intelligence servers were unable to compile the dossier: ${err.message}`,
+        `Pardon me, Sir, but our neural intelligence servers encountered an anomaly: ${err.message}`,
         "alfred"
       );
+    } finally {
+      setTimeout(() => setWaveformActive(false), 800);
     }
   }
 
@@ -401,9 +417,15 @@
 
     if (role === "alfred") {
       msgDiv.innerHTML = `
-        <div class="msg-avatar">🎩</div>
+        <div class="msg-avatar">
+          <div class="avatar-ring"></div>
+          <span>🎩</span>
+        </div>
         <div class="msg-content">
-          <div class="msg-sender">Alfred Pennyworth</div>
+          <div class="msg-sender">
+            <span>ALFRED PENNYWORTH</span>
+            <span class="sender-tag">WAYNE-STARK OS</span>
+          </div>
           <div>${formatted}</div>
         </div>
       `;
@@ -425,12 +447,18 @@
     msgDiv.id = id;
     msgDiv.className = "chat-msg alfred";
     msgDiv.innerHTML = `
-      <div class="msg-avatar">🎩</div>
+      <div class="msg-avatar">
+        <div class="avatar-ring"></div>
+        <span>🎩</span>
+      </div>
       <div class="msg-content">
-        <div class="msg-sender">Alfred Pennyworth</div>
+        <div class="msg-sender">
+          <span>ALFRED PENNYWORTH</span>
+          <span class="sender-tag">PROCESSING TELEMETRY</span>
+        </div>
         <div style="display:flex; align-items:center; gap:8px;">
-          <div class="radar-spinner" style="width:14px; height:14px;"></div>
-          <span style="font-size:0.75rem; color:var(--accent-gold)">Alfred is formulating your response...</span>
+          <div class="arc-spinner" style="width:14px; height:14px;"></div>
+          <span style="font-size:0.75rem; color:var(--holo-gold)" class="hud-mono">ALFRED IS FORMULATING AN EXECUTIVE BRIEFING...</span>
         </div>
       </div>
     `;
@@ -451,31 +479,34 @@
   async function triggerFullScan() {
     scanBtn.disabled = true;
     scanBtn.innerHTML = `
-      <div class="radar-spinner" style="width:14px; height:14px;"></div>
-      <span class="btn-text">Scanning 18 Sources...</span>
+      <div class="arc-spinner" style="width:14px; height:14px;"></div>
+      <span class="btn-text">SWEEPING 18 SOURCES...</span>
     `;
 
-    showToast("Alfred has initiated autonomous radar scan across 18 AI feeds...", "📡", 4000);
+    showToast("ALFRED HAS INITIATED AUTONOMOUS RADAR SWEEP ACROSS 18 AI FEEDS...", "⌖", 4000);
+    setWaveformActive(true);
 
     try {
       const res = await fetch("/api/v1/research/scan", { method: "POST" });
       const data = await res.json();
       await fetchNews();
-      showToast(data.message || "Autonomous scan complete!", "⚡", 5000);
+      showToast(data.message || "RADAR SWEEP COMPLETE. TARGETS RE-RANKED.", "◈", 5000);
 
       appendChatMessage(
         "Alfred",
-        `Master Ashok, the scan across all eighteen authorized channels is complete. We have synthesized ${data.count} high-priority developments for your review.`,
+        `Master Ashok, the radar sweep across all eighteen authorized channels is complete. We have synthesized ${data.count} high-priority intelligence targets for your inspection.`,
         "alfred"
       );
     } catch (err) {
-      showToast("Scan encountered an anomaly: " + err.message, "⚠️");
+      showToast("RADAR SWEEP ANOMALY: " + err.message, "⚠️");
     } finally {
       scanBtn.disabled = false;
       scanBtn.innerHTML = `
-        <span class="btn-icon">⚡</span>
-        <span class="btn-text">Scan 18 Sources</span>
+        <span class="btn-reticle">⌖</span>
+        <span class="btn-text">SWEEP 18 SOURCES</span>
+        <span class="btn-glitch-border"></span>
       `;
+      setTimeout(() => setWaveformActive(false), 800);
     }
   }
 
@@ -557,7 +588,7 @@
     // Copy caption
     copyCaptionBtn.addEventListener("click", () => {
       navigator.clipboard.writeText(captionPreview.value).then(() => {
-        showToast("Caption & tags copied to clipboard!", "📋");
+        showToast("CAPTION PROTOCOL COPIED TO CLIPBOARD", "⧉");
       });
     });
 

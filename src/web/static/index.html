@@ -3,250 +3,328 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ALFRED — Wayne Tech AI Intelligence & Content Studio</title>
-  <meta name="description" content="Autonomous AI News Radar, 4-Slide Instagram Carousel Studio, and Alfred Executive AI Assistant for @ashok_a.i" />
+  <title>ALFRED // STARK-HUD AI INTELLIGENCE SYSTEM</title>
+  <meta name="description" content="Tony Stark JARVIS-Style AI Holographic Intelligence Radar & 4-Slide Content Command for @ashok_a.i" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;800;900&family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body class="jarvis-theme">
+  <!-- Scanline & Holographic Grid Background Overlays -->
+  <div class="hologram-bg-grid"></div>
+  <div class="hud-scanlines"></div>
+  <div class="ambient-glow"></div>
+
   <div class="app-layout">
-    <!-- Top Header: Wayne Tech Command Bar -->
+    <!-- Top Header: Stark Industries Tactical HUD Bar -->
     <header class="top-nav" id="top-nav">
+      <div class="hud-bracket-tl"></div>
+      <div class="hud-bracket-tr"></div>
+
       <div class="brand-group">
-        <div class="bat-crest">
-          <svg viewBox="0 0 48 48" fill="none" class="crest-svg" xmlns="http://www.w3.org/2000/svg">
-            <path d="M24 6L28 15L39 12L34 22L45 25L36 32L40 42L28 35L24 42L20 35L8 42L12 32L3 25L14 22L9 12L20 15L24 6Z" fill="url(#crest-grad)" />
-            <path d="M24 10L27 17L35 15L31 22L39 25L32 30L35 38L27 33L24 38L21 33L13 38L16 30L9 25L17 22L13 15L21 17L24 10Z" fill="#0d131f" />
-            <defs>
-              <linearGradient id="crest-grad" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#f59e0b" />
-                <stop offset="0.5" stop-color="#38bdf8" />
-                <stop offset="1" stop-color="#818cf8" />
-              </linearGradient>
-            </defs>
-          </svg>
+        <!-- Interactive Arc Reactor Graphic -->
+        <div class="arc-reactor-wrap" title="Alfred Arc Reactor Core // Online">
+          <div class="arc-ring ring-outer"></div>
+          <div class="arc-ring ring-mid"></div>
+          <div class="arc-ring ring-inner"></div>
+          <div class="arc-core"></div>
         </div>
+
         <div class="brand-text">
           <div class="brand-title">
-            <span class="alfred-name">ALFRED</span>
-            <span class="version-tag">WAYNE TECH CORE v2.0</span>
+            <span class="jarvis-logo-text">ALFRED</span>
+            <span class="hud-tag">MARK-VII // NEURAL HUD</span>
           </div>
-          <div class="brand-sub">Executive AI Intelligence & Content Command &bull; Master Ashok (<span class="accent-text">@ashok_a.i</span>)</div>
+          <div class="brand-sub">
+            <span class="hud-coord">PROTOCOL: CONTENT COMMAND</span> &bull; OPERATOR: <span class="cyan-glow">@ashok_a.i</span>
+          </div>
         </div>
       </div>
 
-      <div class="system-status-group">
-        <div class="status-pill online">
-          <span class="status-dot pulse"></span>
-          <span class="status-label">BATCAVE CORE // ONLINE</span>
+      <!-- Center Telemetry & Diagnostics -->
+      <div class="center-telemetry">
+        <div class="telemetry-item">
+          <span class="telemetry-label">CORE FREQ</span>
+          <span class="telemetry-val cyan-glow">4.92 GHz</span>
         </div>
-        <div class="status-pill feeds">
-          <span class="icon">📡</span>
-          <span id="feed-count">18 Sources Active</span>
+        <div class="telemetry-divider"></div>
+        <div class="telemetry-item">
+          <span class="telemetry-label">QUANTUM LINK</span>
+          <span class="telemetry-val green-glow">STABLE 99.8%</span>
         </div>
-        <div class="time-pill">
-          <span id="live-clock">--:--:--</span>
+        <div class="telemetry-divider"></div>
+        <div class="telemetry-item">
+          <span class="telemetry-label">RADAR FEEDS</span>
+          <span class="telemetry-val gold-glow" id="feed-count">18 ONLINE</span>
+        </div>
+        <div class="telemetry-divider"></div>
+        <div class="telemetry-item">
+          <span class="telemetry-label">STARK TIME</span>
+          <span class="telemetry-val" id="live-clock">--:--:--</span>
         </div>
       </div>
 
+      <!-- Top Action Controls -->
       <div class="nav-actions">
-        <button id="scan-btn" class="btn btn-primary" title="Trigger autonomous research scan across 18 authorized AI sources">
-          <span class="btn-icon">⚡</span>
-          <span class="btn-text">Scan 18 Sources</span>
+        <button id="scan-btn" class="hud-btn hud-btn-primary" title="Trigger autonomous radar sweep across 18 authorized AI sources">
+          <span class="btn-reticle">⌖</span>
+          <span class="btn-text">SWEEP 18 SOURCES</span>
+          <span class="btn-glitch-border"></span>
         </button>
       </div>
     </header>
 
-    <!-- Main 3-Column Dashboard Body -->
+    <!-- Main 3-Column Hologram Dashboard -->
     <main class="dashboard-body">
-      <!-- COLUMN 1: AI Radar Feed -->
-      <section class="panel radar-panel" id="radar-panel">
+      <!-- COLUMN 1: AI Radar & Priority Intelligence Feed -->
+      <section class="hud-panel radar-panel" id="radar-panel">
+        <div class="corner-bracket cb-tl"></div>
+        <div class="corner-bracket cb-tr"></div>
+        <div class="corner-bracket cb-bl"></div>
+        <div class="corner-bracket cb-br"></div>
+
         <div class="panel-header">
           <div class="panel-title-wrap">
-            <span class="panel-icon">📡</span>
+            <span class="hud-glyph">◈</span>
             <div>
-              <h2 class="panel-title">AI News Radar</h2>
-              <p class="panel-sub">Ranked high-priority intelligence updates</p>
+              <h2 class="panel-title">AI RADAR FEED</h2>
+              <p class="panel-sub">SECTOR: REAL-TIME THREAT & TECH MATRIX</p>
             </div>
           </div>
-          <span class="badge count-badge" id="news-count-badge">0 items</span>
+          <span class="hud-badge" id="news-count-badge">0 TARGETS</span>
         </div>
 
-        <!-- Filter & Search Controls -->
+        <!-- Filter & Search HUD Controls -->
         <div class="radar-controls">
           <div class="search-wrap">
-            <input type="text" id="news-search" placeholder="Filter intelligence..." aria-label="Search AI News" />
-            <span class="search-icon">🔍</span>
+            <span class="search-bracket">[</span>
+            <input type="text" id="news-search" placeholder="FILTER TARGET FREQUENCIES..." aria-label="Search AI News" />
+            <span class="search-bracket">]</span>
+            <span class="search-icon">⌕</span>
           </div>
           <div class="category-filters" id="category-filters">
-            <button class="filter-chip active" data-category="ALL">All</button>
-            <button class="filter-chip" data-category="Tool">🛠️ Tools</button>
-            <button class="filter-chip" data-category="Frontier">🧠 Models</button>
-            <button class="filter-chip" data-category="Agent">🤖 Agents</button>
-            <button class="filter-chip" data-category="Robotics">🦾 Robotics</button>
+            <button class="filter-chip active" data-category="ALL"><span class="chip-dot"></span>ALL</button>
+            <button class="filter-chip" data-category="Tool"><span class="chip-dot"></span>TOOLS</button>
+            <button class="filter-chip" data-category="Frontier"><span class="chip-dot"></span>MODELS</button>
+            <button class="filter-chip" data-category="Agent"><span class="chip-dot"></span>AGENTS</button>
+            <button class="filter-chip" data-category="Robotics"><span class="chip-dot"></span>ROBOTS</button>
           </div>
         </div>
 
         <!-- Scrollable Feed -->
         <div class="radar-feed-list" id="radar-feed-list">
           <div class="loading-state">
-            <div class="radar-spinner"></div>
-            <p>Alfred is calibrating sensor feeds...</p>
+            <div class="arc-spinner"></div>
+            <p class="hud-mono">SYNCHRONIZING RADAR ARRAYS...</p>
           </div>
         </div>
       </section>
 
       <!-- COLUMN 2: 4-Slide Instagram Carousel Studio -->
-      <section class="panel studio-panel" id="studio-panel">
+      <section class="hud-panel studio-panel" id="studio-panel">
+        <div class="corner-bracket cb-tl"></div>
+        <div class="corner-bracket cb-tr"></div>
+        <div class="corner-bracket cb-bl"></div>
+        <div class="corner-bracket cb-br"></div>
+
         <div class="panel-header">
           <div class="panel-title-wrap">
-            <span class="panel-icon">🎨</span>
+            <span class="hud-glyph">⬡</span>
             <div>
-              <h2 class="panel-title">4-Slide Carousel Studio</h2>
-              <p class="panel-sub" id="active-story-title">No story selected</p>
+              <h2 class="panel-title">CAROUSEL HOLO-STUDIO</h2>
+              <p class="panel-sub" id="active-story-title">STANDBY: SELECT TARGET INTELLIGENCE</p>
             </div>
           </div>
           <div class="studio-header-actions">
-            <button id="regen-carousel-btn" class="btn btn-secondary btn-sm" title="Re-render 4 slides with fresh AI visual art">
-              <span class="btn-icon">🔄</span>
-              <span>Re-render Slides</span>
+            <button id="regen-carousel-btn" class="hud-btn hud-btn-secondary" title="Re-render 4 slides with bespoke AI visual art">
+              <span class="btn-reticle">↻</span>
+              <span>RENDER SLIDES</span>
             </button>
           </div>
         </div>
 
-        <!-- Slide Switcher Tabs -->
+        <!-- Holographic Slide Switcher Tabs -->
         <div class="slide-nav-tabs" id="slide-nav-tabs">
           <button class="slide-tab active" data-slide="1">
-            <span class="tab-num">01</span>
-            <span class="tab-label">Viral Hook</span>
+            <div class="tab-indicator"></div>
+            <span class="tab-num">SLIDE // 01</span>
+            <span class="tab-label">VIRAL HOOK</span>
           </button>
           <button class="slide-tab" data-slide="2">
-            <span class="tab-num">02</span>
-            <span class="tab-label">Architecture</span>
+            <div class="tab-indicator"></div>
+            <span class="tab-num">SLIDE // 02</span>
+            <span class="tab-label">ARCHITECTURE</span>
           </button>
           <button class="slide-tab" data-slide="3">
-            <span class="tab-num">03</span>
-            <span class="tab-label">Key Points</span>
+            <div class="tab-indicator"></div>
+            <span class="tab-num">SLIDE // 03</span>
+            <span class="tab-label">KEY POINTS</span>
           </button>
           <button class="slide-tab" data-slide="4">
-            <span class="tab-num">04</span>
-            <span class="tab-label">Takeaways</span>
+            <div class="tab-indicator"></div>
+            <span class="tab-num">SLIDE // 04</span>
+            <span class="tab-label">TAKEAWAYS</span>
           </button>
         </div>
 
-        <!-- Canvas Preview Area -->
+        <!-- Studio Canvas Area with JARVIS HUD Reticle Framing -->
         <div class="studio-canvas-wrap">
           <div class="slide-viewport" id="slide-viewport">
+            <!-- HUD Reticle corners over slide -->
+            <div class="holo-reticle hr-tl"></div>
+            <div class="holo-reticle hr-tr"></div>
+            <div class="holo-reticle hr-bl"></div>
+            <div class="holo-reticle hr-br"></div>
+            <div class="holo-scanline-fx"></div>
+
             <img id="active-slide-img" src="" alt="Slide Preview" class="slide-img" />
+
             <div class="slide-overlay-info">
               <div class="slide-meta-pill">
-                <span id="current-slide-badge">Slide 01 of 04</span>
-                <span class="watermark-tag">Created by @ashok_a.i</span>
+                <span class="hud-mono" id="current-slide-badge">SLIDE: 01 / 04</span>
+                <span class="hud-mono watermark-tag">ORIGIN: @ashok_a.i</span>
               </div>
             </div>
+
             <div id="slide-loader" class="slide-loader hidden">
-              <div class="radar-spinner"></div>
-              <p id="slide-loader-text">Alfred is generating bespoke visual artwork...</p>
+              <div class="arc-spinner large"></div>
+              <p id="slide-loader-text" class="hud-mono">ALFRED COMPUTING HOLOGRAPHIC SLIDES...</p>
             </div>
           </div>
 
           <!-- Carousel Controls -->
           <div class="slide-nav-controls">
-            <button id="prev-slide-btn" class="nav-arrow" title="Previous Slide (Left Arrow)">◀</button>
+            <button id="prev-slide-btn" class="hud-nav-arrow" title="Previous Slide (Left Arrow)">◀</button>
             <div class="slide-dots" id="slide-dots">
               <span class="dot active"></span>
               <span class="dot"></span>
               <span class="dot"></span>
               <span class="dot"></span>
             </div>
-            <button id="next-slide-btn" class="nav-arrow" title="Next Slide (Right Arrow)">▶</button>
+            <button id="next-slide-btn" class="hud-nav-arrow" title="Next Slide (Right Arrow)">▶</button>
           </div>
         </div>
 
-        <!-- Slide Content Summary -->
+        <!-- Slide Context Telemetry Card -->
         <div class="slide-context-card" id="slide-context-card">
           <div class="context-header">
-            <span class="context-type" id="slide-type-text">SLIDE 1 // HOOK & HERO</span>
-            <span class="aspect-pill">3:4 Ratio (1080 &times; 1350)</span>
+            <span class="context-type" id="slide-type-text">DIAGNOSTIC // SLIDE 01: HOOK & HERO</span>
+            <span class="aspect-pill">RATIO: 3:4 [1080×1350]</span>
           </div>
-          <p class="context-body" id="slide-context-text">Select an intelligence item from the Radar to inspect slides.</p>
+          <p class="context-body" id="slide-context-text">Select an intelligence target from the radar matrix.</p>
         </div>
 
-        <!-- Publishing & Distribution Bar -->
+        <!-- Publishing & Distribution Telemetry Bar -->
         <div class="publishing-box">
           <div class="pub-row-top">
             <div class="platform-checkboxes">
               <label class="platform-label active">
                 <input type="checkbox" id="pub-ig" checked />
-                <span>📸 Instagram</span>
+                <span>INSTAGRAM</span>
               </label>
               <label class="platform-label active">
                 <input type="checkbox" id="pub-linkedin" checked />
-                <span>💼 LinkedIn</span>
+                <span>LINKEDIN</span>
               </label>
               <label class="platform-label">
                 <input type="checkbox" id="pub-x" />
-                <span>🐦 X / Twitter</span>
+                <span>X / TWITTER</span>
               </label>
               <label class="platform-label">
                 <input type="checkbox" id="pub-yt" />
-                <span>📹 YouTube</span>
+                <span>YOUTUBE</span>
               </label>
             </div>
-            <button id="publish-btn" class="btn btn-accent">
-              <span class="btn-icon">🚀</span>
-              <span>Publish Carousel</span>
+            <button id="publish-btn" class="hud-btn hud-btn-accent">
+              <span class="btn-reticle">▲</span>
+              <span>DISPATCH CAROUSEL</span>
             </button>
           </div>
 
           <!-- Caption Viewer -->
           <div class="caption-wrapper">
             <div class="caption-header">
-              <span>Instagram & LinkedIn Caption Preview</span>
-              <button id="copy-caption-btn" class="btn-copy">📋 Copy Caption</button>
+              <span class="hud-mono">CAPTION PROTOCOL & METRICS</span>
+              <button id="copy-caption-btn" class="btn-copy">⧉ COPY CAPTION</button>
             </div>
             <textarea id="caption-preview" rows="3" readonly placeholder="Autonomous caption with hashtags will generate here..."></textarea>
           </div>
         </div>
       </section>
 
-      <!-- COLUMN 3: Alfred Executive AI Butler -->
-      <section class="panel alfred-panel" id="alfred-panel">
+      <!-- COLUMN 3: Alfred Executive AI Butler (JARVIS Interface) -->
+      <section class="hud-panel alfred-panel" id="alfred-panel">
+        <div class="corner-bracket cb-tl"></div>
+        <div class="corner-bracket cb-tr"></div>
+        <div class="corner-bracket cb-bl"></div>
+        <div class="corner-bracket cb-br"></div>
+
         <div class="panel-header">
           <div class="panel-title-wrap">
-            <div class="alfred-avatar">
-              <span class="alfred-glyph">🎩</span>
+            <!-- Holographic JARVIS Audio Visualizer Core -->
+            <div class="alfred-jarvis-core">
+              <div class="core-wave-ring"></div>
+              <div class="core-pulse-node"></div>
             </div>
             <div>
-              <h2 class="panel-title">Alfred</h2>
-              <p class="panel-sub">Executive Butler & AI Copilot</p>
+              <h2 class="panel-title">ALFRED // JARVIS-OS</h2>
+              <p class="panel-sub">EXECUTIVE AI BUTLER & STRATEGIC ADVISOR</p>
             </div>
           </div>
-          <div class="alfred-status-pill">
-            <span class="status-dot gold pulse"></span>
-            <span>At Your Service</span>
+          <div class="jarvis-status-hud">
+            <span class="status-pulse-dot"></span>
+            <span class="hud-mono">STANDBY FOR SIR</span>
           </div>
         </div>
 
-        <!-- Alfred Quick Prompt Chips -->
+        <!-- Audio Waveform Visualizer Bar -->
+        <div class="jarvis-waveform-bar" id="jarvis-waveform-bar">
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+        </div>
+
+        <!-- Alfred Quick Prompt Tactical Chips -->
         <div class="alfred-chips" id="alfred-chips">
-          <button class="chip" data-prompt="Master Alfred, please provide a comprehensive executive technical intelligence breakdown on the current story.">🔬 Deep-Dive Briefing</button>
-          <button class="chip" data-prompt="Alfred, formulate three punchier, high-conversion hooks for Slide 1.">🎯 Punchier Hooks</button>
-          <button class="chip" data-prompt="What is the strategic competitive advantage of this development for enterprise developers?">💼 Strategic Advantage</button>
-          <button class="chip" data-prompt="Draft a crisp 30-second video script for an Instagram Reel on this topic.">🎙️ 30s Reel Script</button>
+          <button class="chip" data-prompt="Alfred, provide an executive technical intelligence briefing on the active target."><span class="chip-code">[01]</span> DEEP-DIVE DOSSIER</button>
+          <button class="chip" data-prompt="Alfred, engineer three high-conversion viral hooks for Slide 1."><span class="chip-code">[02]</span> VIRAL HOOKS</button>
+          <button class="chip" data-prompt="What is the strategic competitive moat and enterprise impact of this technology?"><span class="chip-code">[03]</span> STRATEGIC MOAT</button>
+          <button class="chip" data-prompt="Draft a crisp 30-second high-energy video script for Instagram Reels on this story."><span class="chip-code">[04]</span> 30S REEL SCRIPT</button>
         </div>
 
         <!-- Chat Message History -->
         <div class="alfred-chat-box" id="alfred-chat-box">
           <!-- Alfred Welcome Message -->
           <div class="chat-msg alfred">
-            <div class="msg-avatar">🎩</div>
+            <div class="msg-avatar">
+              <div class="avatar-ring"></div>
+              <span>🎩</span>
+            </div>
             <div class="msg-content">
-              <div class="msg-sender">Alfred Pennyworth</div>
-              <p>Good evening, Master Ashok. The Batcave neural feeds have been synthesized. All eighteen authorized AI channels are monitored under your insignia (<span class="accent-text">@ashok_a.i</span>).</p>
-              <p>How may I assist your content operations this evening, Sir? I stand prepared to dissect architectures, polish carousel slides, or dispatch our intelligence across the network.</p>
+              <div class="msg-sender">
+                <span>ALFRED PENNYWORTH</span>
+                <span class="sender-tag">WAYNE-STARK OS // ONLINE</span>
+              </div>
+              <p>At your service, Master Ashok. All eighteen authorized intelligence arrays are synchronized and locked to your personal frequency (<span class="cyan-glow">@ashok_a.i</span>).</p>
+              <p>Holographic slide renderers are armed and the neural networks are fully operational. Shall I brief you on our highest-value target, or would you prefer a custom content angle, Sir?</p>
             </div>
           </div>
         </div>
@@ -254,12 +332,16 @@
         <!-- Chat Input Bar -->
         <div class="alfred-input-bar">
           <div class="chat-context-indicator" id="chat-context-indicator">
-            <span class="icon">📌</span>
-            <span id="chat-context-label">Context: No story selected</span>
+            <span class="icon">⌖</span>
+            <span id="chat-context-label">TARGET CONTEXT: NONE SELECTED</span>
           </div>
           <div class="input-row">
-            <textarea id="alfred-user-input" rows="1" placeholder="Instruct Alfred (e.g., 'Analyze the benchmark results for Slide 3')..." aria-label="Message Alfred"></textarea>
-            <button id="alfred-send-btn" class="btn btn-primary btn-icon-only" title="Send instruction to Alfred">
+            <div class="input-bracket-wrap">
+              <span class="input-bracket">[</span>
+              <textarea id="alfred-user-input" rows="1" placeholder="INSTRUCT ALFRED (e.g. 'Synthesize benchmark results for Slide 2')..." aria-label="Message Alfred"></textarea>
+              <span class="input-bracket">]</span>
+            </div>
+            <button id="alfred-send-btn" class="hud-btn hud-btn-primary btn-icon-only" title="Transmit instruction to Alfred">
               <span>➤</span>
             </button>
           </div>
@@ -267,10 +349,12 @@
       </section>
     </main>
 
-    <!-- Global Toast Notification -->
-    <div id="toast" class="toast hidden">
-      <span id="toast-icon">⚡</span>
-      <span id="toast-msg">Notification message</span>
+    <!-- Global Holographic HUD Toast Notification -->
+    <div id="toast" class="hud-toast hidden">
+      <div class="toast-bracket-l"></div>
+      <span id="toast-icon">◈</span>
+      <span id="toast-msg">SYSTEM NOTIFICATION</span>
+      <div class="toast-bracket-r"></div>
     </div>
   </div>
 
