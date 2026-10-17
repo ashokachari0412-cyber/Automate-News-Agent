@@ -1,18 +1,22 @@
 """FastAPI Orchestrator & Alfred AI Web App Backend."""
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import mimetypes
 import os
 import re
+import secrets
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -25,7 +29,7 @@ from src.models.script import VideoBlueprint
 from src.publishers.instagram_publisher import InstagramPublisher
 from src.publishers.linkedin_publisher import LinkedInPublisher
 from src.publishers.youtube_publisher import YouTubePublisher
-from src import storage
+from src import progress, storage
 from src.google_workspace import auth as google_auth
 from src.google_workspace.agent import is_workspace_query, run_workspace_agent
 from src.google_workspace.router import router as google_router
@@ -46,6 +50,36 @@ app = FastAPI(
 )
 
 app.include_router(google_router)
+
+
+PUBLIC_PWA_PATHS = {"/manifest.webmanifest", "/sw.js", "/favicon.png", "/logo.png",
+                    "/icon-192.png", "/icon-512.png", "/icon-512-maskable.png"}
+
+
+@app.middleware("http")
+async def basic_auth(request, call_next):
+    """Protect the app with HTTP Basic auth when APP_PASSWORD is set (needed for public tunnels)."""
+    password = (getattr(settings, "APP_PASSWORD", None) or os.getenv("APP_PASSWORD", "")).strip()
+    # Install files stay public: browsers fetch the manifest/icons/service worker without credentials,
+    # and a 401 there makes the PWA "cannot be installed". They contain nothing private.
+    if not password or request.url.path in PUBLIC_PWA_PATHS:
+        return await call_next(request)
+    try:
+        supplied = base64.b64decode(request.headers.get("authorization", "")[6:]).decode().partition(":")[2]
+    except Exception:
+        supplied = ""
+    if not secrets.compare_digest(supplied.encode(), password.encode()):
+        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Alfred AI"'})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def no_stale_web_app(request, call_next):
+    """Make browsers revalidate the web app files so UI updates show up immediately."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -87,6 +121,7 @@ def _save_news_cache():
 
 async def _generate_post_caption(item: PrioritizedNewsItem) -> str:
     """Creates a 2-4 line social post caption with minimal tech emojis."""
+    progress.report("Writing the post caption and hashtags...")
     prompt = (
         f"Write a social media post description (strictly 2 to 4 lines) for: '{item.title}'.\n"
         f"Context: {item.summary}\n"
@@ -109,12 +144,17 @@ _load_news_cache()
 # Request / Response Schemas
 class AlfredChatRequest(BaseModel):
     message: str
+    attachment_name: Optional[str] = None
+    attachment_text: Optional[str] = None
+    job_id: Optional[str] = None  # lets the UI poll /api/v1/progress/{job_id} for live steps
     context_news_id: Optional[str] = None
     history: Optional[List[Dict[str, str]]] = None
 
 
 class PublishCarouselRequest(BaseModel):
     platforms: List[str] = Field(default_factory=lambda: ["instagram"])
+    format: str = "carousel"  # "carousel" (4 Instagram images) or "single" (1 image)
+    brand: str = "instagram"  # single image only: "instagram" (@ashok_a.i branded) or "linkedin" (content only)
 
 
 @app.on_event("startup")
@@ -194,6 +234,16 @@ async def generate_carousel(news_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v1/carousel/{news_id}/single")
+async def get_single_image(news_id: str, brand: str = "instagram"):
+    """Serves the single all-in-one image (Instagram-branded or plain LinkedIn)."""
+    brand = "linkedin" if brand == "linkedin" else "instagram"
+    single_file = CAROUSELS_DIR / news_id / f"single_{brand}.png"
+    if not single_file.exists():
+        raise HTTPException(status_code=404, detail="Single image not found")
+    return FileResponse(single_file, media_type="image/png")
+
+
 @app.get("/api/v1/carousel/{news_id}/slide/{slide_num}")
 async def get_carousel_slide(news_id: str, slide_num: int):
     """Serves the generated slide image for the web app live preview."""
@@ -218,11 +268,16 @@ async def publish_carousel(news_id: str, payload: PublishCarouselRequest):
         raise HTTPException(status_code=404, detail="News item not found")
 
     caption = await _generate_post_caption(item)
-    slide_paths = [CAROUSELS_DIR / news_id / f"slide_{i:02d}.png" for i in range(1, 5)]
-
-    # Make sure slides exist
-    if not all(p.exists() for p in slide_paths):
-        await _carousel_generator.generate_carousel_async(item)
+    if payload.format == "single":
+        brand = "linkedin" if payload.brand == "linkedin" else "instagram"
+        slide_paths = [CAROUSELS_DIR / news_id / f"single_{brand}.png"]
+        if not slide_paths[0].exists():
+            await _carousel_generator.generate_single_async(item, brand)
+    else:
+        slide_paths = [CAROUSELS_DIR / news_id / f"slide_{i:02d}.png" for i in range(1, 5)]
+        # Make sure slides exist
+        if not all(p.exists() for p in slide_paths):
+            await _carousel_generator.generate_carousel_async(item)
 
     results = {}
     for plat in payload.platforms:
@@ -270,6 +325,48 @@ def _ranked_news() -> List[PrioritizedNewsItem]:
     return items
 
 
+ATTACHMENT_MAX_CHARS = 60000
+ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024
+
+
+def _extract_attachment_text(name: str, data: bytes) -> str:
+    ext = Path(name).suffix.lower()
+    if ext == ".pdf":
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    if ext == ".docx":
+        import docx
+        return "\n".join(p.text for p in docx.Document(io.BytesIO(data)).paragraphs)
+    if b"\x00" in data[:4096]:
+        raise ValueError("Unsupported file type. Attach a PDF, Word (.docx) or text/code file.")
+    return data.decode("utf-8-sig", errors="replace")
+
+
+@app.post("/api/v1/alfred/attach")
+async def attach_file(file: UploadFile = File(...)):
+    """Extracts text from an attached file so the next chat message can use it."""
+    data = await file.read()
+    if len(data) > ATTACHMENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is larger than 15 MB.")
+    try:
+        text = (await asyncio.to_thread(_extract_attachment_text, file.filename or "file", data)).strip()
+    except ValueError as e:
+        raise HTTPException(status_code=415, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not read file: {e}")
+    if not text:
+        raise HTTPException(status_code=422, detail="No readable text found in this file.")
+    return {"name": file.filename, "chars": len(text), "truncated": len(text) > ATTACHMENT_MAX_CHARS,
+            "text": text[:ATTACHMENT_MAX_CHARS]}
+
+
+@app.get("/api/v1/progress/{job_id}")
+async def get_progress(job_id: str):
+    """Latest human-readable step of a running chat job (polled by the UI)."""
+    return {"message": progress.get(job_id)}
+
+
 @app.get("/api/v1/alfred/memory")
 async def get_alfred_memory():
     """Returns the persisted conversation so the UI can restore it on reload."""
@@ -278,8 +375,22 @@ async def get_alfred_memory():
 
 @app.delete("/api/v1/alfred/memory")
 async def clear_alfred_memory():
-    storage.save_memory({"messages": [], "last_news_id": None})
+    """New chat: the current conversation is saved to history (last 15 sessions) and cleared."""
+    storage.archive_current_session()
     return {"status": "cleared"}
+
+
+@app.get("/api/v1/alfred/sessions")
+async def list_chat_sessions():
+    return {"sessions": storage.list_sessions()}
+
+
+@app.post("/api/v1/alfred/sessions/{session_id}/open")
+async def open_chat_session(session_id: str):
+    memory = storage.open_session(session_id)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return memory
 
 
 @app.post("/api/v1/alfred/chat")
@@ -289,7 +400,11 @@ async def alfred_chat(req: AlfredChatRequest):
     memory = storage.load_memory()
     history = [{"role": m["role"], "content": m["content"]} for m in memory.get("messages", [])]
 
-    response = await _handle_chat(req, history, memory.get("last_news_id"))
+    progress.start(req.job_id)
+    try:
+        response = await _handle_chat(req, history, memory.get("last_news_id"))
+    finally:
+        progress.finish(req.job_id)
 
     memory.setdefault("messages", []).append({"role": "user", "content": req.message})
     memory["messages"].append({"role": "assistant", "content": response["reply"],
@@ -306,12 +421,27 @@ async def alfred_chat(req: AlfredChatRequest):
 async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], last_news_id: Optional[str]) -> Dict[str, Any]:
     msg_lower = req.message.lower().strip()
 
+    # Attached file: answer the request about that file's content
+    if req.attachment_text:
+        prompt = (
+            f"[Attached file: {req.attachment_name or 'file'}]\n{req.attachment_text[:ATTACHMENT_MAX_CHARS]}\n[End of file]\n\n"
+            f"User message from Master Ashok: \"{req.message}\"\n\n"
+            "Answer using the attached file. Respond as Alfred in character:"
+        )
+        try:
+            reply = await _llm_client.generate_text(prompt, system_prompt=ALFRED_SYSTEM_PROMPT, history=history)
+            return {"reply": reply.strip(), "author": "Alfred"}
+        except Exception as e:
+            logger.error(f"Attachment chat error: {e}")
+            return {"reply": f"I could not read that file properly, Master Ashok: {e}", "author": "Alfred"}
+
     # 0. Intent: personal Google data (Drive / Calendar / Gmail) via Gemini tool calling
     if is_workspace_query(msg_lower):
         if not google_auth.is_connected():
             return {"reply": "Please connect your Google account first (the **Connect Google** button at the top), Master Ashok.",
                     "author": "Alfred"}
         try:
+            progress.report("Looking through your Google account (Gmail, Drive, Calendar)...")
             return {"author": "Alfred", **await run_workspace_agent(req.message, history)}
         except Exception as e:
             logger.error(f"Workspace agent error: {e}")
@@ -327,13 +457,16 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     if any(trigger in msg_lower for trigger in scan_triggers):
         try:
             if not _cached_news or "scan" in msg_lower or "sweep" in msg_lower:
+                progress.report("Starting a fresh scan of AI news from the last 24 hours...")
                 workflow_res = await run_research_workflow()
                 for it in workflow_res.items:
                     _cached_news[it.id] = it
                 _save_news_cache()
         except Exception as err:
             logger.warning(f"Live scan fallback to cache: {err}")
+            progress.report("Live scan had a problem, using the most recent saved news instead...")
 
+        progress.report("Writing your news digest...")
         top_items = _ranked_news()[:4]
 
         digest_blocks = [
@@ -386,6 +519,23 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     if any(t in msg_lower for t in carousel_triggers) and any(w in msg_lower for w in ["generate", "create", "make", "show", "give", "build", "craft", "for", "news"]):
         target = find_target_news()
         if target:
+            progress.report(f"Picked the story: \"{target.title[:70]}\"")
+        if target and ("single" in msg_lower or "linkedin" in msg_lower):
+            brand = "linkedin" if "linkedin" in msg_lower else "instagram"
+            await _carousel_generator.generate_single_async(target, brand)
+            where = "LinkedIn (Ashokachari P)" if brand == "linkedin" else "Instagram (@ashok_a.i)"
+            return {
+                "reply": f"Master Ashok, here is your single {where} image for **\"{target.title}\"**.",
+                "author": "Alfred",
+                "action": "carousel",
+                "format": "single",
+                "brand": brand,
+                "news_id": target.id,
+                "title": target.title,
+                "slides": [f"/api/v1/carousel/{target.id}/single?brand={brand}&v={int(time.time())}"],
+                "caption": await _generate_post_caption(target),
+            }
+        if target:
             paths = await _carousel_generator.generate_carousel_async(target)
             slide_urls = [f"/api/v1/carousel/{target.id}/slide/{i}" for i in range(1, len(paths) + 1)]
             caption = await _generate_post_caption(target)
@@ -404,6 +554,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     if any(t in msg_lower for t in video_triggers) and any(w in msg_lower for w in ["generate", "create", "make", "draft", "write", "show", "give", "for", "news"]):
         target = find_target_news()
         if target:
+            progress.report(f"Writing a 35-40s video script with hook and scenes for \"{target.title[:60]}\"...")
             bp = await _content_agent.generate_blueprint(target)
             scenes_text = [
                 f"**Scene {sc.scene_number} ({sc.timestamp}):**\n*Visual: {sc.visual_description}*\n\"{sc.spoken_script}\"\n[Popup: {sc.on_screen_text}]"
@@ -436,6 +587,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
 
     full_prompt = "\n".join(context_lines) + f"\n\nUser message from Master Ashok: \"{req.message}\"\n\nRespond as Alfred in character:"
     try:
+        progress.report("Thinking about your question...")
         reply = await _llm_client.generate_text(full_prompt, system_prompt=ALFRED_SYSTEM_PROMPT, history=history)
         return {"reply": reply.strip(), "author": "Alfred"}
     except Exception as e:

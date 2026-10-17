@@ -8,15 +8,15 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="icon" type="image/png" href="favicon.png" />
-  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="icon" type="image/png" href="favicon.png?v=11" />
+  <link rel="apple-touch-icon" href="icon-192.png?v=11" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <meta name="theme-color" content="#121214" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alfred" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=11" />
 </head>
 <body class="alfred-theme">
 
@@ -25,29 +25,35 @@
     <header class="top-nav">
       <div class="nav-left">
         <div class="brand-logo-wrap">
-          <img class="brand-logo-img" src="logo.png" alt="Alfred AI">
+          <img class="brand-logo-img" src="logo.png?v=11" alt="Alfred AI">
         </div>
         <span class="brand-title">Alfred AI</span>
       </div>
 
       <div class="nav-right">
-        <button class="nav-btn" id="google-btn" title="Connect your Google account">
-          <span>Connect Google</span>
-        </button>
-        <button class="nav-btn" id="new-chat-btn" title="Clear memory and start a new chat">
-          <span>New chat</span>
-        </button>
-        <button class="nav-btn" id="history-btn" title="View chat history">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-          <span>History</span>
-        </button>
-
-        <div class="model-pill">
-          <span class="status-dot"></span>
-          <span>Gemini 3.8 Flash</span>
+        <div class="profile-wrap">
+          <button class="menu-trigger" id="profile-btn" title="Menu" aria-haspopup="true" aria-expanded="false">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+            <span class="user-avatar-pill">A</span>
+          </button>
+          <div class="profile-menu hidden" id="profile-menu" role="menu">
+            <div class="profile-menu-header">
+              <span class="user-avatar-pill large">A</span>
+              <div>
+                <div class="profile-name">Ashok P</div>
+                <div class="profile-handle">@ashok_a.i</div>
+              </div>
+            </div>
+            <button class="profile-menu-item" id="google-btn" role="menuitem" title="Connect your Google account">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              <span>Connect Google</span>
+            </button>
+            <button class="profile-menu-item" id="history-btn" role="menuitem" title="View chat history">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <span>History</span>
+            </button>
+          </div>
         </div>
-
-        <div class="user-avatar-pill" title="Ashok P (@ashok_a.i)">A</div>
       </div>
     </header>
 
@@ -60,7 +66,7 @@
           <!-- Glowing Fedora Emblem -->
           <div class="hero-emblem-wrap">
             <div class="hero-emblem-card">
-              <img class="hero-logo-img" src="logo.png" alt="Alfred AI">
+              <img class="hero-logo-img" src="logo.png?v=11" alt="Alfred AI">
             </div>
           </div>
 
@@ -119,6 +125,12 @@
     <!-- Bottom Floating Input Bar -->
     <footer class="chat-footer">
       <div class="input-card">
+        <div class="quick-chips">
+          <button class="quick-chip" id="ai-updates-btn" type="button" title="Scan the latest 24h AI news">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49"/></svg>
+            <span>AI Updates</span>
+          </button>
+        </div>
         <div class="input-controls-row">
           <!-- Left Attachment & Mic Icons -->
           <div class="input-tools-left">
@@ -127,6 +139,9 @@
             </button>
             <button class="tool-btn" id="voice-btn" title="Voice input">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+            </button>
+            <button class="tool-btn" id="new-chat-btn" title="New chat (current chat is saved to History)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
           </div>
 
@@ -145,7 +160,7 @@
         </div>
 
         <div class="input-disclaimer">
-          Alfred uses Google Gemini 3.8 Flash
+          Alfred uses Gemini + Claude
         </div>
       </div>
     </footer>
@@ -153,28 +168,15 @@
     <!-- History Drawer / Modal -->
     <div class="history-drawer hidden" id="history-drawer">
       <div class="history-header">
-        <h3>Recent Intelligence & Chats</h3>
+        <h3>Chat History</h3>
         <button class="close-drawer-btn" id="close-history-btn">✕</button>
       </div>
-      <div class="history-content" id="history-content">
-        <div class="history-item-row" data-prompt="Scan the latest 24h AI breaking news across all authorized labs.">
-          <span class="hist-icon">📡</span>
-          <span class="hist-title">24h AI Lab News Sweep</span>
-        </div>
-        <div class="history-item-row" data-prompt="Synthesize 4-slide Instagram Carousel for today's top story.">
-          <span class="hist-icon">🎨</span>
-          <span class="hist-title">Instagram 4-Slide Carousel</span>
-        </div>
-        <div class="history-item-row" data-prompt="Draft a 35s video script for @ashok_a.i with hook & scene cues.">
-          <span class="hist-icon">🎬</span>
-          <span class="hist-title">35s Video Blueprint</span>
-        </div>
-      </div>
+      <div class="history-content" id="history-content"></div>
     </div>
     <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=11"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW registration failed:", e));

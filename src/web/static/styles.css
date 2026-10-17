@@ -152,12 +152,105 @@ body.alfred-theme {
   border-radius: 50%;
   background-color: #2b2b32;
   color: var(--text-primary);
+  font: inherit;
   font-size: 0.78rem;
   font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-light);
+  flex-shrink: 0;
+}
+
+.user-avatar-pill.large {
+  width: 36px;
+  height: 36px;
+  font-size: 0.95rem;
+  background-color: var(--accent-terracotta);
+  border-color: var(--accent-terracotta);
+  color: #fff;
+}
+
+/* Header menu button: hamburger + avatar, like most apps */
+.menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 3px 3px 10px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.menu-trigger:hover,
+.menu-trigger[aria-expanded="true"] {
+  border-color: var(--accent-terracotta);
+  color: var(--text-primary);
+}
+
+.profile-wrap {
+  position: relative;
+}
+
+.profile-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 200;
+  min-width: 200px;
+  padding: 6px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.profile-menu.hidden {
+  display: none;
+}
+
+.profile-menu-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 4px;
+}
+
+.profile-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.profile-handle {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.profile-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.profile-menu-item:hover {
+  background-color: var(--bg-card-hover);
+  color: var(--text-primary);
 }
 
 /* ==============================================================================
@@ -424,6 +517,40 @@ body.alfred-theme {
   to { transform: rotate(360deg); }
 }
 
+/* Live backend progress inside the thinking bubble */
+.progress-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 4px 0;
+}
+
+.progress-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.progress-step.current {
+  color: var(--text-primary);
+}
+
+.progress-step .spinner {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.step-check {
+  width: 16px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--accent-terracotta);
+  font-weight: 700;
+}
+
 /* ==============================================================================
    BOTTOM INPUT FOOTER
    ============================================================================== */
@@ -604,8 +731,13 @@ body.alfred-theme {
 
 .history-item-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  color: inherit;
   padding: 10px 12px;
   background-color: var(--bg-app);
   border: 1px solid var(--border-light);
@@ -627,6 +759,18 @@ body.alfred-theme {
 .hist-title {
   color: var(--text-primary);
   font-weight: 500;
+  font-size: 0.82rem;
+}
+
+.hist-meta {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.history-empty {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  padding: 8px 4px;
 }
 
 /* ==============================================================================
@@ -923,6 +1067,128 @@ body.alfred-theme {
 
 a.msg-action-btn {
   text-decoration: none;
+}
+
+.msg-action-btn.active {
+  border-color: var(--accent-terracotta);
+  color: var(--accent-terracotta);
+}
+
+/* News digest: separate Images / Video sections */
+.digest-section {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+.digest-section .msg-actions {
+  margin-top: 8px;
+}
+
+.digest-section-title,
+.format-choice-title {
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.format-choice {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-light);
+}
+
+.format-choice.hidden,
+.hidden-row {
+  display: none !important;
+}
+
+.brand-title {
+  flex-basis: 100%;
+}
+
+.slide-grid.single {
+  grid-template-columns: minmax(0, 360px);
+}
+
+/* Quick chips above the input (AI Updates) */
+.quick-chips {
+  display: flex;
+  gap: 8px;
+}
+
+.quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-terracotta);
+  background: rgba(217, 119, 87, 0.14);
+  color: var(--accent-terracotta);
+  font: inherit;
+  font-size: 0.82em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.quick-chip:hover:not(:disabled) {
+  background: var(--accent-terracotta);
+  color: #fff;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 6px 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-card-hover);
+  font-size: 0.8em;
+  color: var(--text-primary);
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.attachment-status {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.attachment-chip.error .attachment-status {
+  color: var(--accent-terracotta);
+}
+
+.attachment-chip button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.1em;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.attachment-chip button:hover {
+  color: var(--text-primary);
+}
+
+.quick-chip:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .msg-action-btn.primary {

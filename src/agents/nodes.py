@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from typing_extensions import TypedDict
 
 from config.settings import TwitterAccountConfig, settings
+from src import progress
 from src.collectors.base import BaseCollector
 from src.collectors.factory import get_collector
 from src.llm.client import LLMClient
@@ -39,6 +40,7 @@ class ResearchNodes:
         """Node 1: Fetches latest posts from configured trusted Twitter accounts."""
         accounts = state.get("accounts") or settings.get_trusted_accounts()
         logger.info(f"Running collect_tweets_node across {len(accounts)} trusted accounts.")
+        progress.report(f"Collecting the latest posts from {len(accounts)} trusted AI sources...")
 
         try:
             tweets = await self.collector.collect(
@@ -56,6 +58,7 @@ class ResearchNodes:
         """Node 2: Filters out personal chit-chat, short spam, and irrelevant posts."""
         raw_tweets = state.get("raw_tweets", [])
         filtered: List[RawTweet] = []
+        progress.report(f"Found {len(raw_tweets)} posts, keeping only real news from the last 24 hours...")
 
         # Common noise patterns to discard
         noise_keywords = ["coffee", "lunch", "dinner", "flight", "weather", "gm", "gn", "happy birthday"]
@@ -87,6 +90,7 @@ class ResearchNodes:
         """Node 3: Groups tweets covering related topics/events."""
         filtered_tweets = state.get("filtered_tweets", [])
         clusters: List[TweetCluster] = []
+        progress.report(f"Grouping {len(filtered_tweets)} posts that talk about the same story...")
 
         # Simple semantic clustering by URL overlap and key phrase matching
         clusters_by_key: Dict[str, List[RawTweet]] = {}
@@ -136,6 +140,7 @@ class ResearchNodes:
         clusters = state.get("clusters", [])
         filtered_tweets = state.get("filtered_tweets", [])
         raw_tweets = state.get("raw_tweets", [])
+        progress.report(f"Gemini is scoring {len(clusters)} stories and picking the most important ones...")
 
         # Prepare summary of candidates for LLM prompt
         candidates_payload = []

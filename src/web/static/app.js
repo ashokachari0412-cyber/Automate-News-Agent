@@ -11,6 +11,8 @@
   const chatInput = document.getElementById("chat-input");
   const sendBtn = document.getElementById("send-btn");
   const actionCards = document.querySelectorAll(".action-card");
+  const aiUpdatesBtn = document.getElementById("ai-updates-btn");
+  const SCAN_PROMPT = "Scan the latest 24h AI breaking news across all authorized labs and summarize the top discoveries.";
 
   // History Drawer
   const historyBtn = document.getElementById("history-btn");
@@ -18,20 +20,23 @@
   const historyDrawer = document.getElementById("history-drawer");
   const closeHistoryBtn = document.getElementById("close-history-btn");
   const drawerBackdrop = document.getElementById("drawer-backdrop");
-  const historyRows = document.querySelectorAll(".history-item-row");
+  const historyContent = document.getElementById("history-content");
 
   // Tools
   const attachBtn = document.getElementById("attach-btn");
   const voiceBtn = document.getElementById("voice-btn");
 
   let isGenerating = false;
+  let pendingAttachment = null; // { name, text } extracted server-side, sent with the next message
 
   function init() {
     setupInputEvents();
     setupActionCards();
+    setupAiUpdatesButton();
     setupHistoryDrawer();
     setupToolButtons();
     newChatBtn.addEventListener("click", clearMemory);
+    setupProfileMenu();
     setupGoogleButton();
     restoreMemory();
   }
@@ -50,30 +55,61 @@
     }
   }
 
+  // Profile avatar opens a small menu holding Connect Google + History
+  function setupProfileMenu() {
+    const btn = document.getElementById("profile-btn");
+    const menu = document.getElementById("profile-menu");
+    const setOpen = (open) => {
+      menu.classList.toggle("hidden", !open);
+      btn.setAttribute("aria-expanded", String(open));
+    };
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setOpen(menu.classList.contains("hidden"));
+    });
+    menu.addEventListener("click", (e) => {
+      if (e.target.closest(".profile-menu-item")) setOpen(false);
+    });
+    document.addEventListener("click", (e) => {
+      if (!menu.contains(e.target)) setOpen(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") setOpen(false);
+    });
+  }
+
   async function setupGoogleButton() {
     const btn = document.getElementById("google-btn");
     const label = btn.querySelector("span");
     let connected = false;
+    let reconnect = false;
     try {
       const s = await (await fetch("/api/v1/google/status")).json();
       connected = s.connected;
+      reconnect = s.needs_reconnect;
     } catch (e) {
       console.warn("Google status unavailable:", e);
     }
-    label.textContent = connected ? "Google connected" : "Connect Google";
-    btn.title = connected ? "Click to disconnect your Google account" : "Connect your Google account";
+    const render = () => {
+      label.textContent = reconnect ? "Reconnect Google" : connected ? "Google connected ✓" : "Connect Google";
+      btn.title = connected && !reconnect ? "Connected. Click to disconnect" : "Connect your Google account";
+    };
+    render();
     btn.addEventListener("click", async () => {
-      if (!connected) {
+      if (!connected || reconnect) {
         window.location.href = "/api/v1/google/connect";
         return;
       }
+      // Only an explicit, confirmed click disconnects the account
+      if (!confirm("Disconnect your Google account from Alfred?")) return;
       await fetch("/api/v1/google/disconnect", { method: "POST" });
       connected = false;
-      label.textContent = "Connect Google";
+      render();
     });
   }
 
   async function clearMemory() {
+    if (isGenerating) return;
     try {
       await fetch("/api/v1/alfred/memory", { method: "DELETE" });
     } catch (e) {
@@ -87,7 +123,7 @@
     chatInput.addEventListener("input", function () {
       this.style.height = "auto";
       this.style.height = Math.min(this.scrollHeight, 160) + "px";
-      sendBtn.disabled = this.value.trim().length === 0 || isGenerating;
+      sendBtn.disabled = (this.value.trim().length === 0 && !pendingAttachment) || isGenerating;
     });
 
     chatInput.addEventListener("keydown", (e) => {
@@ -104,10 +140,20 @@
     actionCards.forEach((card) => {
       card.addEventListener("click", () => {
         const prompt = card.dataset.prompt;
-        if (prompt) {
+        if (prompt && !isGenerating) {
           sendPrompt(prompt);
         }
       });
+    });
+  }
+
+  // "AI Updates" chip in the typing area: runs a fresh 24h news scan + digest
+  function setupAiUpdatesButton() {
+    aiUpdatesBtn.addEventListener("click", () => {
+      if (isGenerating) return;
+      aiUpdatesBtn.disabled = true;
+      sendPrompt(SCAN_PROMPT, "Alfred is scanning the latest 24h AI news (about 1 minute)...")
+        .finally(() => (aiUpdatesBtn.disabled = false));
     });
   }
 
@@ -115,6 +161,7 @@
     historyBtn.addEventListener("click", () => {
       historyDrawer.classList.remove("hidden");
       drawerBackdrop.classList.remove("hidden");
+      loadSessions(closeDrawer);
     });
 
     function closeDrawer() {
@@ -124,21 +171,83 @@
 
     closeHistoryBtn.addEventListener("click", closeDrawer);
     drawerBackdrop.addEventListener("click", closeDrawer);
+  }
 
-    historyRows.forEach((row) => {
-      row.addEventListener("click", () => {
-        const prompt = row.dataset.prompt;
-        closeDrawer();
-        if (prompt) {
-          sendPrompt(prompt);
-        }
-      });
+  // History = the last 15 chat sessions (saved each time "New chat" is pressed)
+  async function loadSessions(closeDrawer) {
+    historyContent.innerHTML = `<div class="history-empty">Loading...</div>`;
+    let sessions = [];
+    try {
+      sessions = (await (await fetch("/api/v1/alfred/sessions")).json()).sessions || [];
+    } catch (e) {
+      historyContent.innerHTML = `<div class="history-empty">Could not load history.</div>`;
+      return;
+    }
+    if (!sessions.length) {
+      historyContent.innerHTML = `<div class="history-empty">No past chats yet. Press + (New chat) to save the current chat here.</div>`;
+      return;
+    }
+    historyContent.innerHTML = "";
+    sessions.forEach((s) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "history-item-row";
+      const when = s.updated_at ? new Date(s.updated_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+      row.innerHTML = `<span class="hist-title"></span><span class="hist-meta"></span>`;
+      row.querySelector(".hist-title").textContent = s.title;
+      row.querySelector(".hist-meta").textContent = `${when} · ${Math.ceil(s.count / 2)} messages`;
+      row.addEventListener("click", () => openSession(s.id, closeDrawer));
+      historyContent.appendChild(row);
     });
   }
 
+  async function openSession(id, closeDrawer) {
+    if (isGenerating) return;
+    try {
+      const res = await fetch(`/api/v1/alfred/sessions/${encodeURIComponent(id)}/open`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const memory = await res.json();
+      chatMessages.innerHTML = "";
+      const messages = memory.messages || [];
+      if (heroSection) heroSection.classList.toggle("hidden", messages.length > 0);
+      messages.forEach((m) => appendMessage(m.role, m.content, m));
+      closeDrawer();
+    } catch (e) {
+      historyContent.insertAdjacentHTML("afterbegin", `<div class="history-empty">Could not open chat: ${escapeHtml(e.message)}</div>`);
+    }
+  }
+
   function setupToolButtons() {
+    // Real file attachment: upload -> server extracts text -> sent with the next message
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".pdf,.docx,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.xml,.yaml,.yml,.log";
+    fileInput.hidden = true;
+    document.body.appendChild(fileInput);
+
     attachBtn.addEventListener("click", () => {
-      sendPrompt("Alfred, summarize the current active repository context, models, and recent research findings.");
+      if (!isGenerating) fileInput.click();
+    });
+
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files[0];
+      fileInput.value = "";
+      if (!file) return;
+      showAttachmentChip(file.name, "Reading...");
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await fetch("/api/v1/alfred/attach", { method: "POST", body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        pendingAttachment = { name: data.name, text: data.text };
+        showAttachmentChip(data.name, data.truncated ? "Attached (first part)" : "Attached");
+        sendBtn.disabled = isGenerating;
+        chatInput.focus();
+      } catch (e) {
+        pendingAttachment = null;
+        showAttachmentChip(file.name, `Failed: ${e.message}`, true);
+      }
     });
 
     voiceBtn.addEventListener("click", () => {
@@ -149,8 +258,30 @@
     });
   }
 
+  function showAttachmentChip(name, status, isError) {
+    let chip = document.getElementById("attachment-chip");
+    if (!chip) {
+      chip = document.createElement("div");
+      chip.id = "attachment-chip";
+      chip.className = "attachment-chip";
+      document.querySelector(".quick-chips").appendChild(chip);
+    }
+    chip.classList.toggle("error", !!isError);
+    chip.innerHTML = `<span class="attachment-name"></span><span class="attachment-status"></span><button type="button" title="Remove attachment">&times;</button>`;
+    chip.querySelector(".attachment-name").textContent = name;
+    chip.querySelector(".attachment-status").textContent = status;
+    chip.querySelector("button").addEventListener("click", clearAttachment);
+  }
+
+  function clearAttachment() {
+    pendingAttachment = null;
+    const chip = document.getElementById("attachment-chip");
+    if (chip) chip.remove();
+    sendBtn.disabled = chatInput.value.trim().length === 0 || isGenerating;
+  }
+
   function submitQuery() {
-    const text = chatInput.value.trim();
+    const text = chatInput.value.trim() || (pendingAttachment ? "Summarize this file." : "");
     if (!text || isGenerating) return;
 
     chatInput.value = "";
@@ -160,31 +291,39 @@
     sendPrompt(text);
   }
 
-  async function sendPrompt(text) {
+  async function sendPrompt(text, thinkingLabel) {
     if (heroSection) {
       heroSection.classList.add("hidden");
     }
 
-    appendMessage("user", text);
+    const attachment = pendingAttachment;
+    if (attachment) clearAttachment();
+    appendMessage("user", attachment ? `📎 ${attachment.name}\n${text}` : text);
 
     isGenerating = true;
     sendBtn.disabled = true;
-    const isImageJob = /image|carousel|slide|photo|post/i.test(text) && !/drive|gmail|email/i.test(text);
-    const thinkingId = appendThinkingBubble(
-      isImageJob ? "Alfred is creating 4 unique images (about 1-2 minutes)..." : undefined
-    );
+    const thinkingId = appendThinkingBubble(thinkingLabel || "Alfred is on it...");
+    const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const stopProgress = watchProgress(jobId, thinkingId);
 
     try {
       const res = await fetch("/api/v1/alfred/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({
+          message: text,
+          job_id: jobId,
+          attachment_name: attachment ? attachment.name : null,
+          attachment_text: attachment ? attachment.text : null,
+        }),
       });
 
       const data = await res.json();
+      stopProgress();
       removeElement(thinkingId);
       appendMessage("assistant", data.reply || "At your service, Master Ashok.", data);
     } catch (err) {
+      stopProgress();
       removeElement(thinkingId);
       appendMessage(
         "assistant",
@@ -197,6 +336,54 @@
     }
   }
 
+  // Polls the backend for the job's current step and shows it live: the current step with a
+  // spinner, finished steps above it with a check mark (only the last few are kept).
+  function watchProgress(jobId, bubbleId) {
+    let stopped = false;
+    let last = null;
+    const steps = [];
+    const MAX_STEPS = 5;
+
+    async function tick() {
+      if (stopped) return;
+      try {
+        const res = await fetch(`/api/v1/progress/${encodeURIComponent(jobId)}`);
+        const { message } = await res.json();
+        if (message && message !== last && !stopped) {
+          last = message;
+          steps.push(message);
+          renderSteps();
+        }
+      } catch (e) {
+        /* transient polling error: keep showing the last step */
+      }
+      if (!stopped) setTimeout(tick, 1200);
+    }
+
+    function renderSteps() {
+      const body = document.querySelector(`#${bubbleId} .bubble-body`);
+      if (!body) return;
+      let list = body.querySelector(".progress-steps");
+      if (!list) {
+        body.querySelector(".thinking-state").remove();
+        list = document.createElement("div");
+        list.className = "progress-steps";
+        body.appendChild(list);
+      }
+      const shown = steps.slice(-MAX_STEPS);
+      list.innerHTML = shown.map((s, i) => {
+        const current = i === shown.length - 1;
+        return `<div class="progress-step${current ? " current" : ""}">${
+          current ? '<div class="spinner"></div>' : '<span class="step-check">✓</span>'
+        }<span>${escapeHtml(s)}</span></div>`;
+      }).join("");
+      scrollToBottom();
+    }
+
+    setTimeout(tick, 400);
+    return () => { stopped = true; };
+  }
+
   function appendMessage(role, text, data) {
     const bubble = document.createElement("div");
     bubble.className = `chat-bubble ${role}`;
@@ -206,7 +393,7 @@
     if (role === "assistant") {
       bubble.innerHTML = `
         <div class="bubble-avatar">
-          <img class="avatar-logo-img" src="logo.png" alt="Alfred">
+          <img class="avatar-logo-img" src="avatar.png?v=10" alt="Alfred">
         </div>
         <div class="bubble-body">
           <div class="bubble-sender">Alfred</div>
@@ -268,7 +455,12 @@
           btn.textContent = "Copied";
         }));
       }
-      const platforms = [["instagram", "Instagram"], ["linkedin", "LinkedIn"], ["youtube", "YouTube Short"]];
+      const isSingle = data.format === "single";
+      const brand = data.brand === "linkedin" ? "linkedin" : "instagram";
+      const platforms = isSingle
+        ? (brand === "linkedin" ? [["linkedin", "LinkedIn"]] : [["instagram", "Instagram"]])
+        : [["instagram", "Instagram"], ["linkedin", "LinkedIn"], ["youtube", "YouTube Short"]];
+      if (isSingle) grid.classList.add("single");
       const picker = document.createElement("div");
       picker.className = "platform-picker";
       platforms.forEach(([value, name]) => {
@@ -294,7 +486,7 @@
           const res = await fetch(`/api/v1/carousel/publish/${data.news_id}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ platforms: selected }),
+            body: JSON.stringify({ platforms: selected, format: isSingle ? "single" : "carousel", brand }),
           });
           const results = (await res.json()).results || {};
           status.innerHTML = selected.map((p) => {
@@ -339,18 +531,64 @@
     }
 
     if (data.action === "news_digest" && Array.isArray(data.items) && data.items.length) {
-      const actions = document.createElement("div");
-      actions.className = "msg-actions";
+      // Images section: each story first asks for the format (LinkedIn single vs Instagram 4)
+      const imgSection = makeSection("Images");
+      const choice = document.createElement("div");
+      choice.className = "format-choice hidden";
       data.items.forEach((item, i) => {
-        actions.appendChild(makeButton(`Images for #${i + 1}`, false, () => {
-          if (!isGenerating) sendPrompt(`generate images for ${i + 1}`);
+        imgSection.row.appendChild(makeButton(`Images #${i + 1}`, false, (btn) => {
+          imgSection.row.querySelectorAll(".msg-action-btn").forEach((b) => b.classList.remove("active"));
+          btn.classList.add("active");
+          choice.innerHTML = `<div class="format-choice-title">#${i + 1} — choose a format</div>`;
+          const opts = document.createElement("div");
+          opts.className = "msg-actions";
+          // Single photo first asks where it will be posted: Instagram is branded, LinkedIn is content only
+          const brandRow = document.createElement("div");
+          brandRow.className = "msg-actions hidden-row";
+          brandRow.innerHTML = `<div class="format-choice-title brand-title">Single photo — is this for Instagram or LinkedIn?</div>`;
+          brandRow.appendChild(makeButton("Instagram · @ashok_a.i", false, () => {
+            if (!isGenerating) sendPrompt(`generate single image for instagram ${i + 1}`);
+          }));
+          brandRow.appendChild(makeButton("LinkedIn · Ashokachari P", false, () => {
+            if (!isGenerating) sendPrompt(`generate single image for linkedin ${i + 1}`);
+          }));
+
+          opts.appendChild(makeButton("Single photo", false, (b) => {
+            opts.querySelectorAll(".msg-action-btn").forEach((x) => x.classList.remove("active"));
+            b.classList.add("active");
+            brandRow.classList.remove("hidden-row");
+            scrollToBottom();
+          }));
+          opts.appendChild(makeButton("4 photos · Instagram", false, () => {
+            if (!isGenerating) sendPrompt(`generate images for ${i + 1}`);
+          }));
+          choice.appendChild(opts);
+          choice.appendChild(brandRow);
+          choice.classList.remove("hidden");
+          scrollToBottom();
         }));
-        actions.appendChild(makeButton(`Video for #${i + 1}`, false, () => {
+      });
+      imgSection.el.appendChild(choice);
+      body.appendChild(imgSection.el);
+
+      const vidSection = makeSection("Video");
+      data.items.forEach((item, i) => {
+        vidSection.row.appendChild(makeButton(`Video #${i + 1}`, false, () => {
           if (!isGenerating) sendPrompt(`generate video for ${i + 1}`);
         }));
       });
-      body.appendChild(actions);
+      body.appendChild(vidSection.el);
     }
+  }
+
+  function makeSection(title) {
+    const el = document.createElement("div");
+    el.className = "digest-section";
+    el.innerHTML = `<div class="digest-section-title">${escapeHtml(title)}</div>`;
+    const row = document.createElement("div");
+    row.className = "msg-actions";
+    el.appendChild(row);
+    return { el, row };
   }
 
   // In-page slide viewer with prev/next arrows and keyboard support
@@ -425,7 +663,7 @@
     bubble.className = "chat-bubble assistant";
     bubble.innerHTML = `
       <div class="bubble-avatar">
-        <img class="avatar-logo-img" src="logo.png" alt="Alfred">
+        <img class="avatar-logo-img" src="avatar.png?v=10" alt="Alfred">
       </div>
       <div class="bubble-body">
         <div class="bubble-sender">Alfred</div>
@@ -455,6 +693,8 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
+      .replace(/^#{1,4}\s+(.+)$/gm, "<strong>$1</strong>")
+      .replace(/^\s*[*-]\s+/gm, "• ")
       .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
       .replace(/\*(.*?)\*/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>")

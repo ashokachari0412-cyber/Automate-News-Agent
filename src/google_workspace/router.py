@@ -18,7 +18,8 @@ EXPORTS = {
 
 @router.get("/status")
 async def status():
-    return {"configured": auth.is_configured(), "connected": auth.is_connected()}
+    return {"configured": auth.is_configured(), "connected": auth.is_connected(),
+            "needs_reconnect": auth.needs_reconnect(), "refresh_token_expires_at": auth.refresh_token_expiry()}
 
 
 @router.get("/connect")

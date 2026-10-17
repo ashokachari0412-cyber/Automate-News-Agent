@@ -104,8 +104,16 @@ class InstagramPublisher:
 
         def _sync_upload():
             cl = self._get_client()
-            logger.info(f"📤 Uploading {len(valid_paths)} slides as Instagram carousel...")
-            media = cl.album_upload(paths=valid_paths, caption=caption)
+            if len(valid_paths) == 1:
+                # Albums need 2+ items; a single image is a normal photo post (JPEG required)
+                from PIL import Image
+                jpg = valid_paths[0].with_suffix(".jpg")
+                Image.open(valid_paths[0]).convert("RGB").save(jpg, "JPEG", quality=95)
+                logger.info("📤 Uploading single photo post to Instagram...")
+                media = cl.photo_upload(jpg, caption=caption)
+            else:
+                logger.info(f"📤 Uploading {len(valid_paths)} slides as Instagram carousel...")
+                media = cl.album_upload(paths=valid_paths, caption=caption)
             code = getattr(media, "code", "")
             url = f"https://www.instagram.com/p/{code}/" if code else f"https://www.instagram.com/{self.username}/"
             logger.info(f"✅ Carousel posted! URL: {url}")

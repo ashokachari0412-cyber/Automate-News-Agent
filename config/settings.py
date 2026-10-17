@@ -32,7 +32,15 @@ class Settings(BaseSettings):
     # Google Gemini Settings (Google AI Pro)
     GEMINI_API_KEY: Optional[str] = Field(default=None)
     GEMINI_MODEL: str = "gemini-3.8-flash"
-    GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image"
+    GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image"  # legacy single-model setting (kept for compatibility)
+    # Image models tried in order (best first); the next one is used when a model fails or has no quota.
+    GEMINI_IMAGE_MODELS: str = (
+        "gemini-3-pro-image,"          # Nano Banana Pro  - best quality & text/detail fidelity
+        "gemini-nano-banana-2.1,"      # Nano Banana 2.1
+        "gemini-3.1-flash-image,"      # Nano Banana 2    - fast, high quality
+        "gemini-3.1-flash-lite-image," # Nano Banana 2 Lite
+        "gemini-2.5-flash-image"       # Nano Banana      - original
+    )
 
     # News & Research Collection (100% Authorized AI Lab Feeds + Hugging Face)
     COLLECTOR_MODE: Literal["authorized", "auto", "playwright", "syndication", "mock"] = "authorized"
@@ -75,6 +83,7 @@ class Settings(BaseSettings):
     # Instagram Direct Auto-Posting (instagrapi)
     INSTAGRAM_USERNAME: Optional[str] = Field(default=None)
     INSTAGRAM_PASSWORD: Optional[str] = Field(default=None)
+    APP_PASSWORD: Optional[str] = Field(default=None)
     INSTAGRAM_SESSIONID: Optional[str] = Field(default=None)
 
     # Scheduler Settings (Containerized Periodic Pipeline)

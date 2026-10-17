@@ -5,6 +5,13 @@ import asyncio
 import io
 import sys
 
+# Background mode (pythonw / scheduled task) has no console: send output to a log file
+if sys.stdout is None or sys.stderr is None:
+    from pathlib import Path as _Path
+    _log = _Path(__file__).resolve().parent.parent / "artifacts" / "server.log"
+    _log.parent.mkdir(parents=True, exist_ok=True)
+    sys.stdout = sys.stderr = open(_log, "a", encoding="utf-8", buffering=1)
+
 # Ensure UTF-8 encoding on Windows to support emojis and international characters
 if sys.platform.startswith("win"):
     try:
@@ -183,6 +190,7 @@ def main():
     serve_parser = subparsers.add_parser("serve", help="Start FastAPI orchestrator server")
     serve_parser.add_argument("--host", default="0.0.0.0", help="Host address")
     serve_parser.add_argument("--port", type=int, default=8000, help="Port number")
+    serve_parser.add_argument("--no-reload", action="store_true", help="Disable auto-reload (always-on mode)")
 
     # scheduler command
     subparsers.add_parser("scheduler", help="Run autonomous periodic news pipeline scheduler")
@@ -198,7 +206,7 @@ def main():
         asyncio.run(run_scheduler())
     elif args.command == "serve":
         import uvicorn
-        uvicorn.run("src.api.main:app", host=args.host, port=args.port, reload=True)
+        uvicorn.run("src.api.main:app", host=args.host, port=args.port, reload=not args.no_reload)
     elif args.command == "run" or args.command is None:
         asyncio.run(run_pipeline_cmd(send_slack=getattr(args, "slack", False)))
 

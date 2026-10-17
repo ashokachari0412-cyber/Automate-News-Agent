@@ -17,8 +17,9 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+from src import progress
 from src.models.news import PrioritizedNewsItem
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -77,6 +78,19 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> List[st
     return lines
 
 
+def _wrap_sentences(draw: ImageDraw.ImageDraw, text: str, font, max_width: int, max_lines: int) -> List[str]:
+    """Wraps text, dropping trailing whole sentences (not words) until it fits in max_lines."""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    while sentences:
+        lines = _wrap(draw, " ".join(sentences), font, max_width)
+        if len(lines) <= max_lines:
+            return lines
+        if len(sentences) == 1:
+            return lines[:max_lines]
+        sentences.pop()
+    return []
+
+
 def _fallback_photo(category: str) -> Optional[Path]:
     cat = (category or "").lower()
     mapping = {"robot": "robotics.jpg", "vision": "computer_vision.jpg", "agent": "agentic_workflow.jpg",
@@ -86,6 +100,14 @@ def _fallback_photo(category: str) -> Optional[Path]:
             return VISUALS_DIR / f
     p = VISUALS_DIR / "default_ai.jpg"
     return p if p.exists() else None
+
+
+def _load_photo(photo: Optional[Path], size: Tuple[int, int], centering=(0.5, 0.35)) -> Image.Image:
+    """Cover-crops the photo to `size` and sharpens it so upscaled renders stay crisp."""
+    if not photo:
+        return Image.new("RGB", size, (24, 24, 28))
+    img = ImageOps.fit(Image.open(photo).convert("RGB"), size, Image.LANCZOS, centering=centering)
+    return img.filter(ImageFilter.UnsharpMask(radius=2, percent=90, threshold=3))
 
 
 class CarouselGenerator:
@@ -108,6 +130,7 @@ class CarouselGenerator:
             json.dumps({"posts": posts, "photos": [str(p) if p else None for p in photos]}, ensure_ascii=False),
             encoding="utf-8",
         )
+        progress.report("Adding headlines and text on top of the 4 photos...")
         return await asyncio.to_thread(self.generate_carousel, item, posts, photos)
 
     def generate_carousel(self, item: PrioritizedNewsItem,
@@ -142,15 +165,98 @@ class CarouselGenerator:
             paths.append(p)
         return paths
 
+    async def generate_single_async(self, item: PrioritizedNewsItem, brand: str = "instagram") -> Path:
+        """One image that carries the whole update: photo on top, full summary below.
+
+        brand="instagram" adds the @ashok_a.i handle + follow CTA; brand="linkedin" is content only.
+        """
+        from src.video.slide_visuals import prepare_post_assets
+        posts, photos = await prepare_post_assets(item, count=1)
+        photo = photos[0] if photos and photos[0] and photos[0].exists() else _fallback_photo(item.category)
+        news_dir = self.output_dir / item.id
+        news_dir.mkdir(parents=True, exist_ok=True)
+        out = news_dir / f"single_{brand}.png"
+        progress.report("Laying out the headline, summary and key takeaways on the image...")
+        img = await asyncio.to_thread(self._compose_single, photo, item,
+                                      posts[0].get("headline") or item.title, brand == "instagram")
+        img.save(out, "PNG")
+        return out
+
+    def _compose_single(self, photo: Optional[Path], item: PrioritizedNewsItem, headline: str,
+                        branded: bool = True) -> Image.Image:
+        W, H, M = self.W, self.H, self.M
+        photo_h = int(H * 0.42)
+        img = Image.new("RGB", (W, H), (17, 17, 20))
+        img.paste(_load_photo(photo, (W, photo_h), centering=(0.5, 0.4)), (0, 0))
+
+        # Soft fade from the photo into the dark text panel
+        fade = Image.new("RGBA", (W, 160), (0, 0, 0, 0))
+        fd = ImageDraw.Draw(fade)
+        for y in range(160):
+            fd.line([(0, y), (W, y)], fill=(17, 17, 20, int(255 * y / 160)))
+        img = img.convert("RGBA")
+        img.alpha_composite(fade, (0, photo_h - 160))
+        draw = ImageDraw.Draw(img)
+
+        if branded:
+            draw.text((M, 44), WATERMARK, fill=WHITE, font=_get_font(28, bold=True))
+
+        max_w = W - 2 * M
+        f_label = _get_font(24, bold=True)
+        f_head = _get_font(52, bold=True)
+        f_body = _get_font(29, bold=False)
+        f_sub = _get_font(27, bold=True)
+
+        y = photo_h - 30
+        label = "AI UPDATE"
+        lw = draw.textlength(label, font=f_label)
+        draw.rounded_rectangle([M, y, M + lw + 28, y + 38], radius=19, fill=ACCENT)
+        draw.text((M + 14, y + 5), label, fill=(17, 17, 17), font=f_label)
+        y += 58
+
+        for ln in _wrap(draw, _strip_emojis(headline), f_head, max_w)[:3]:
+            draw.text((M, y), ln, fill=WHITE, font=f_head)
+            y += int(f_head.size * 1.12)
+        y += 10
+
+        body_lh = int(f_body.size * 1.38)
+        for ln in _wrap_sentences(draw, _strip_emojis(item.summary), f_body, max_w, 4):
+            draw.text((M, y), ln, fill=SOFT_WHITE, font=f_body)
+            y += body_lh
+        y += 16
+
+        points = [_strip_emojis(p) for p in (item.key_bullet_points or [])[:3] if p]
+        if points:
+            draw.text((M, y), "KEY TAKEAWAYS", fill=ACCENT, font=f_sub)
+            y += 42
+            for p in points:
+                lines = _wrap(draw, p, f_body, max_w - 34)[:2]
+                draw.ellipse([M, y + 13, M + 12, y + 25], fill=ACCENT)
+                for ln in lines:
+                    draw.text((M + 34, y), ln, fill=SOFT_WHITE, font=f_body)
+                    y += body_lh
+            y += 12
+
+        footer_y = H - 70 if branded else H - 30
+        if item.why_it_matters and y < footer_y - 90:
+            draw.text((M, y), "WHY IT MATTERS", fill=ACCENT, font=f_sub)
+            y += 42
+            room = max(1, (footer_y - 20 - y) // body_lh)
+            for ln in _wrap_sentences(draw, _strip_emojis(item.why_it_matters), f_body, max_w, min(3, room)):
+                draw.text((M, y), ln, fill=SOFT_WHITE, font=f_body)
+                y += body_lh
+
+        if branded:
+            f_foot = _get_font(26, bold=True)
+            fw = draw.textlength(CTA_TEXT, font=f_foot)
+            draw.text(((W - fw) / 2, footer_y), CTA_TEXT, fill=ACCENT, font=f_foot)
+        return img.convert("RGB")
+
     def _compose(self, photo: Optional[Path], post: Dict[str, str], index: int, total: int) -> Image.Image:
         W, H, M = self.W, self.H, self.M
 
         # 1. Full-bleed photo (cover-cropped to 4:5)
-        if photo:
-            base = ImageOps.fit(Image.open(photo).convert("RGB"), (W, H), Image.LANCZOS, centering=(0.5, 0.35))
-        else:
-            base = Image.new("RGB", (W, H), (24, 24, 28))
-        img = base.convert("RGBA")
+        img = _load_photo(photo, (W, H)).convert("RGBA")
 
         # 2. Dark fade at the bottom for legible text, light fade at the top for the handle
         fade = Image.new("RGBA", (W, H), (0, 0, 0, 0))

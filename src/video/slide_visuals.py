@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 
 from config.settings import settings
+from src import progress
 from src.llm.client import LLMClient
 from src.models.news import PrioritizedNewsItem
 
@@ -40,16 +41,14 @@ POST_ROLES = [
 # Distinct real-world shot types. Each carousel uses 4 different ones (rotated per story),
 # so images never repeat the same "person at a laptop" scene.
 SHOT_TYPES = [
-    "CONCEPTUAL STILL LIFE: a striking real-object metaphor for the idea (e.g. memory -> a wall of sticky notes and old photo prints), studio product lighting, bold solid-colour background",
-    "MACRO CLOSE-UP: extreme close-up of a real detail (hands, a keyboard key, a chip, an eye, a camera lens), very shallow depth of field",
-    "TOP-DOWN FLAT LAY: overhead shot of real objects arranged neatly on a coloured surface that tell the story",
-    "OUTDOOR STREET / LIFESTYLE: candid shot outside (street, cafe, train, park, rooftop) showing everyday life touched by the story",
-    "DRAMATIC HARDWARE / OBJECT HERO: a single real device or object as the hero, low angle, rim light, dark backdrop",
-    "WIDE ENVIRONMENT: a wide establishing shot of a real place tied to the story (factory floor, hospital, classroom, data center aisle, film set)",
-    "SPLIT / BEFORE-AFTER: a real photographic diptych-like composition contrasting the old way and the new way",
-    "PORTRAIT WITH EMOTION: an expressive close portrait of one person reacting (surprise, relief, focus), coloured gel lighting",
-    "AERIAL / DRONE: a top-down aerial photo of a city, crowd, traffic or landscape as a metaphor for scale",
-    "VINTAGE / ANALOG METAPHOR: real retro objects (typewriter, filing cabinets, film camera, rotary phone) contrasting with the new tech",
+    "PRODUCT HERO: the actual device, product or hardware from the story as the clear hero, studio lighting, clean backdrop",
+    "IN-USE CLOSE-UP: hands actually using the product/tool from the story (phone, laptop, robot, camera, car), shallow depth of field",
+    "REAL WORKPLACE: the real kind of place where this story happens (lab, data center aisle, newsroom, hospital, factory, studio)",
+    "PEOPLE AT WORK: the real professionals this story affects (developers, doctors, designers, drivers) doing that exact job",
+    "WIDE ENVIRONMENT: a wide establishing shot of the real industry or setting the story is about",
+    "COMPANY CONTEXT: a real office, campus, keynote stage or event setting matching the company in the story (no logos)",
+    "BEFORE/AFTER IN PRACTICE: a real scene showing the task the story changes, as it is done today",
+    "DETAIL MACRO: an extreme close-up of the most relevant physical detail of the story (a chip, a sensor, a screen edge, a robot hand)",
 ]
 
 PALETTES = [
@@ -75,9 +74,12 @@ For each image return:
   as if shot by a professional photographer for Wired, Bloomberg or The Verge: real people, real
   offices, real laptops/phones/screens/hardware, real places, natural or practical lighting,
   35mm or 50mm lens, shallow depth of field, candid and authentic.
-  Be specific to THIS story's subject. The 4 images must look completely different from each other:
-  different location, subject, camera distance, angle and colours.
-  At most ONE image may show a person sitting at a desk/computer; prefer objects, places and metaphors.
+  RELEVANCE IS THE TOP PRIORITY: a viewer must understand what the story is about from the photo alone.
+  Name the concrete subject explicitly in the prompt (the actual product type, device, industry,
+  profession or place from the story). NO abstract metaphors or unrelated props (no chess pieces,
+  headphones, sticky notes, coffee cups, plants, typewriters unless the story is literally about them).
+  The 4 images must look different from each other: different subject, camera distance and angle.
+  At most ONE image may show a person sitting at a desk/computer.
   When people appear, vary age, gender and ethnicity.
   NEVER: holograms, neon glow, glowing circuits, sci-fi, futuristic cities, digital brains,
   abstract data streams, 3D renders, illustrations, cartoons.
@@ -90,12 +92,15 @@ For each image return:
 Return JSON: {{"posts": [{{"prompt": "...", "headline": "...", "text": "..."}}, ... 4 items]}}"""
 
 IMAGE_SUFFIX = (
-    ", photorealistic real-world photograph, natural lighting, 35mm, editorial photography, "
-    "authentic, sharp focus, no text, no watermark"
+    ", photorealistic real-world photograph, ultra sharp, crisp fine detail, high resolution, "
+    "professional DSLR, 50mm, editorial photography, clean composition, no blur, no noise, "
+    "no text, no watermark"
 )
 
-# Set once the Gemini image model refuses (quota/billing) so we don't retry it on every image.
-_gemini_image_disabled = False
+# Per-model skip-until times: a model out of quota is skipped for a while instead of retried on
+# every image (keeps generation fast while still picking quota back up later).
+_model_cooldown_until: Dict[str, float] = {}
+_QUOTA_COOLDOWN = 15 * 60
 
 # The anonymous Pollinations tier is rate limited (one request at a time, roughly one
 # every ~15s); faster calls are rejected with HTTP 402. Requests are serialized and spaced.
@@ -104,7 +109,7 @@ _POLLINATIONS_MIN_INTERVAL = 15.0
 _last_pollinations_call = 0.0
 
 
-PLAN_VERSION = "v3"  # bump to invalidate cached plans/photos when the art direction changes
+PLAN_VERSION = "v4"  # bump to invalidate cached plans/photos when the art direction changes
 
 
 def _story_key(item: PrioritizedNewsItem) -> str:
@@ -162,44 +167,68 @@ async def _plan_posts(item: PrioritizedNewsItem, llm: LLMClient) -> List[Dict[st
     return fallback
 
 
-def _render_with_gemini(prompt: str, llm: LLMClient) -> Optional[bytes]:
-    global _gemini_image_disabled
-    if _gemini_image_disabled or not llm._client:
+FRIENDLY_MODEL_NAMES = {
+    "gemini-3-pro-image": "Nano Banana Pro",
+    "gemini-nano-banana-2.1": "Nano Banana 2.1",
+    "gemini-3.1-flash-image": "Nano Banana 2",
+    "gemini-3.1-flash-lite-image": "Nano Banana 2 Lite",
+    "gemini-2.5-flash-image": "Nano Banana",
+}
+
+
+def _image_models() -> List[str]:
+    models = [m.strip() for m in (settings.GEMINI_IMAGE_MODELS or "").split(",") if m.strip()]
+    return models or [settings.GEMINI_IMAGE_MODEL]
+
+
+def _render_with_gemini(prompt: str, llm: LLMClient, label: str = "photo") -> Optional[bytes]:
+    """Tries the Nano Banana models best-first; a model that fails is skipped for a cooldown."""
+    if not llm._client:
         return None
-    try:
-        from google.genai import types
-        response = llm._client.models.generate_content(
-            model=settings.GEMINI_IMAGE_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-                image_config=types.ImageConfig(aspect_ratio="4:5"),
-            ),
-        )
-        for part in response.candidates[0].content.parts:
-            if getattr(part, "inline_data", None) and part.inline_data.data:
-                return part.inline_data.data
-    except Exception as e:
-        msg = str(e)
-        if "RESOURCE_EXHAUSTED" in msg or "PERMISSION_DENIED" in msg or "NOT_FOUND" in msg:
-            _gemini_image_disabled = True
-            logger.warning(f"Gemini image model unavailable ({msg[:120]}...). Using fallback renderer.")
-        else:
-            logger.warning(f"Gemini image generation failed: {msg[:200]}")
+    from google.genai import types
+    for model in _image_models():
+        if time.monotonic() < _model_cooldown_until.get(model, 0):
+            continue
+        progress.report(f"Creating {label} with {FRIENDLY_MODEL_NAMES.get(model, model)}...")
+        try:
+            response = llm._client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    image_config=types.ImageConfig(aspect_ratio="4:5"),
+                ),
+            )
+            for part in response.candidates[0].content.parts:
+                if getattr(part, "inline_data", None) and part.inline_data.data:
+                    logger.info(f"Image rendered with {model}")
+                    return part.inline_data.data
+            logger.warning(f"{model} returned no image, trying next model")
+        except Exception as e:
+            msg = str(e)
+            if "NOT_FOUND" in msg or "PERMISSION_DENIED" in msg:
+                _model_cooldown_until[model] = float("inf")  # not available to this key at all
+            elif "RESOURCE_EXHAUSTED" in msg:
+                _model_cooldown_until[model] = time.monotonic() + _QUOTA_COOLDOWN  # quota: retry later
+            logger.warning(f"{model} unavailable ({msg[:100]}...), trying next model")
     return None
 
 
-def _render_with_pollinations(prompt: str, seed: int) -> Optional[bytes]:
+def _render_with_pollinations(prompt: str, seed: int, label: str = "photo") -> Optional[bytes]:
     global _last_pollinations_call
     url = (
         "https://image.pollinations.ai/prompt/"
         f"{urllib.parse.quote(prompt)}?width=1080&height=1350&nologo=true&model=flux&seed={seed}"
     )
+    progress.report(f"Nano Banana isn't available, so {label} is queued on the free Flux image service...")
     with _pollinations_lock:
         for attempt in range(5):
             wait = _last_pollinations_call + _POLLINATIONS_MIN_INTERVAL * (attempt + 1) - time.monotonic()
             if wait > 0:
+                progress.report(f"Waiting about {int(wait)}s for the free image service before {label}...")
                 time.sleep(wait)
+            progress.report(f"Creating {label} with Flux (free image service)..."
+                            if attempt == 0 else f"Retrying {label} (attempt {attempt + 1} of 5)...")
             try:
                 with httpx.Client(timeout=90.0, follow_redirects=True) as client:
                     res = client.get(url)
@@ -213,18 +242,24 @@ def _render_with_pollinations(prompt: str, seed: int) -> Optional[bytes]:
     return None
 
 
-def _render(prompt: str, seed: int, out_path: Path, llm: LLMClient) -> Optional[Path]:
+def _render(prompt: str, seed: int, out_path: Path, llm: LLMClient,
+            label: str = "photo", on_done=None) -> Optional[Path]:
     full_prompt = prompt + IMAGE_SUFFIX
-    data = _render_with_gemini(full_prompt, llm) or _render_with_pollinations(full_prompt, seed)
+    data = _render_with_gemini(full_prompt, llm, label) or _render_with_pollinations(full_prompt, seed, label)
+    if on_done:
+        on_done(bool(data))
     if not data:
         return None
     out_path.write_bytes(data)
     return out_path
 
 
-async def prepare_post_assets(item: PrioritizedNewsItem,
-                              llm: Optional[LLMClient] = None) -> Tuple[List[Dict[str, str]], List[Optional[Path]]]:
-    """Returns (4 post plans with headline/text, 4 photo paths or None where rendering failed)."""
+async def prepare_post_assets(item: PrioritizedNewsItem, llm: Optional[LLMClient] = None,
+                              count: int = 4) -> Tuple[List[Dict[str, str]], List[Optional[Path]]]:
+    """Returns (4 post plans with headline/text, photo paths or None where rendering failed).
+
+    Only the first `count` photos are rendered (the single LinkedIn image needs just the cover).
+    """
     key = _story_key(item)
     story_dir = VISUALS_CACHE_DIR / key
     story_dir.mkdir(parents=True, exist_ok=True)
@@ -233,18 +268,33 @@ async def prepare_post_assets(item: PrioritizedNewsItem,
     llm = llm or LLMClient(settings)
     plan_file = story_dir / "plan.json"
     if plan_file.exists():
+        progress.report("Reusing the photo plan already made for this story...")
         posts = json.loads(plan_file.read_text(encoding="utf-8"))
     else:
+        progress.report("Reading the story and planning relevant photos and headlines...")
         posts = await _plan_posts(item, llm)
         plan_file.write_text(json.dumps(posts, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def cached(p: Path) -> bool:
         return p.exists() and p.stat().st_size > 5000
 
+    todo = [i for i, path in enumerate(paths[:count]) if not cached(path)]
+    if not todo:
+        progress.report("Photos for this story are already made, reusing them...")
+    done = {"n": 0}
+    lock = threading.Lock()
+
+    def on_done(ok: bool) -> None:
+        with lock:
+            done["n"] += 1
+            if len(todo) > 1:
+                progress.report(f"{done['n']} of {len(todo)} photos ready...")
+
     base_seed = int(key[:6], 16)
     tasks = [
-        asyncio.sleep(0, result=path) if cached(path)
-        else asyncio.to_thread(_render, post["prompt"], base_seed + i, path, llm)
-        for i, (post, path) in enumerate(zip(posts, paths))
+        asyncio.sleep(0, result=path) if i not in todo
+        else asyncio.to_thread(_render, post["prompt"], base_seed + i, path, llm,
+                               f"photo {i + 1} of {count}" if count > 1 else "the photo", on_done)
+        for i, (post, path) in enumerate(zip(posts[:count], paths[:count]))
     ]
     return posts, list(await asyncio.gather(*tasks))

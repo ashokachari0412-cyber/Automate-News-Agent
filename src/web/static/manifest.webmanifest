@@ -2,9 +2,11 @@
   "name": "Alfred AI",
   "short_name": "Alfred",
   "description": "Personal AI news, content and Google assistant",
+  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#121214",
   "theme_color": "#121214",
   "icons": [
