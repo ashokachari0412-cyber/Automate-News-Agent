@@ -74,7 +74,8 @@ Return a JSON object with this exact structure:
       "image_prompt": "A futuristic dark-mode cyber illustration depicting this specific update, neon glow in dark cyberspace studio, 8k octane render, no text",
       "vocabulary": {{
         "Key Term 1": "Crisp 1-sentence plain English meaning for beginners",
-        "Key Term 2": "Crisp 1-sentence plain English meaning for beginners"
+        "Key Term 2": "Crisp 1-sentence plain English meaning for beginners",
+        "...": "4 to 6 terms in total: the technical words or names a beginner might google, each copied EXACTLY as it is written in the title, summary, bullet points or why_it_matters"
       }}
     }}
   ]

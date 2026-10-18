@@ -1,0 +1,13 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Long-press the Alfred app icon -> Settings -->
+    <shortcut
+        android:shortcutId="settings"
+        android:enabled="true"
+        android:icon="@drawable/ic_alfred"
+        android:shortcutShortLabel="@string/settings_label">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.alfred.voice"
+            android:targetClass="com.alfred.voice.SettingsActivity" />
+    </shortcut>
+</shortcuts>

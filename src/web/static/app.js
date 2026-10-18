@@ -12,6 +12,10 @@
   const sendBtn = document.getElementById("send-btn");
   const actionCards = document.querySelectorAll(".action-card");
   const aiUpdatesBtn = document.getElementById("ai-updates-btn");
+  const gIntelBtn = document.getElementById("g-intel-btn");
+  const contentMonitorBtn = document.getElementById("content-monitor-btn");
+  const DEFAULT_PLACEHOLDER = "Type your request to Alfred...";
+  let gIntelligence = false; // G-Intelligence on: typed questions go to the connected Google apps
   const SCAN_PROMPT = "Scan the latest 24h AI breaking news across all authorized labs and summarize the top discoveries.";
 
   // History Drawer
@@ -33,6 +37,8 @@
     setupInputEvents();
     setupActionCards();
     setupAiUpdatesButton();
+    setupModeChips();
+    setupTermPopover();
     setupHistoryDrawer();
     setupToolButtons();
     newChatBtn.addEventListener("click", clearMemory);
@@ -154,6 +160,22 @@
       aiUpdatesBtn.disabled = true;
       sendPrompt(SCAN_PROMPT, "Alfred is scanning the latest 24h AI news (about 1 minute)...")
         .finally(() => (aiUpdatesBtn.disabled = false));
+    });
+  }
+
+  // G-Intelligence is a toggle: while on, typed questions are answered from the user's Google apps.
+  // Content-Monitor is a placeholder for a later feature.
+  function setupModeChips() {
+    gIntelBtn.addEventListener("click", () => {
+      gIntelligence = !gIntelligence;
+      gIntelBtn.classList.toggle("active", gIntelligence);
+      gIntelBtn.setAttribute("aria-pressed", String(gIntelligence));
+      chatInput.placeholder = gIntelligence ? "Ask about your Drive, Docs, Gmail, Calendar, Photos..." : DEFAULT_PLACEHOLDER;
+      chatInput.focus();
+    });
+    contentMonitorBtn.addEventListener("click", () => {
+      contentMonitorBtn.classList.add("pulse");
+      setTimeout(() => contentMonitorBtn.classList.remove("pulse"), 600);
     });
   }
 
@@ -288,10 +310,10 @@
     chatInput.style.height = "auto";
     sendBtn.disabled = true;
 
-    sendPrompt(text);
+    sendPrompt(text, gIntelligence ? "Alfred is checking your Google apps..." : undefined, gIntelligence ? "google" : null);
   }
 
-  async function sendPrompt(text, thinkingLabel) {
+  async function sendPrompt(text, thinkingLabel, mode = null) {
     if (heroSection) {
       heroSection.classList.add("hidden");
     }
@@ -315,6 +337,7 @@
           job_id: jobId,
           attachment_name: attachment ? attachment.name : null,
           attachment_text: attachment ? attachment.text : null,
+          mode,
         }),
       });
 
@@ -440,18 +463,41 @@
       });
       block.appendChild(grid);
 
+      let captionInput = null;
       if (data.caption) {
-        const cap = document.createElement("div");
-        cap.className = "caption-box";
-        cap.textContent = data.caption;
-        block.appendChild(cap);
+        // Editable caption: Save stores it on the server and Publish uses it.
+        captionInput = document.createElement("textarea");
+        captionInput.className = "caption-box caption-edit";
+        captionInput.value = data.caption;
+        captionInput.rows = Math.min(8, data.caption.split("\n").length + 1);
+        block.appendChild(captionInput);
       }
 
       const actions = document.createElement("div");
       actions.className = "msg-actions";
-      if (data.caption) {
+      if (captionInput) {
+        const saveBtn = makeButton("Save caption", false, async (btn) => {
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+          try {
+            const res = await fetch(`/api/v1/carousel/${data.news_id}/caption`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ caption: captionInput.value }),
+            });
+            if (!res.ok) throw new Error((await res.json()).detail || res.status);
+            data.caption = captionInput.value;
+            btn.textContent = "Saved";
+          } catch (e) {
+            btn.textContent = "Save failed";
+          } finally {
+            btn.disabled = false;
+          }
+        });
+        captionInput.addEventListener("input", () => { saveBtn.textContent = "Save caption"; });
+        actions.appendChild(saveBtn);
         actions.appendChild(makeButton("Copy caption", false, async (btn) => {
-          await navigator.clipboard.writeText(data.caption);
+          await navigator.clipboard.writeText(captionInput.value);
           btn.textContent = "Copied";
         }));
       }
@@ -536,7 +582,7 @@
       const choice = document.createElement("div");
       choice.className = "format-choice hidden";
       data.items.forEach((item, i) => {
-        imgSection.row.appendChild(makeButton(`Images #${i + 1}`, false, (btn) => {
+        imgSection.row.appendChild(makeButton(`Img#${i + 1}`, false, (btn) => {
           imgSection.row.querySelectorAll(".msg-action-btn").forEach((b) => b.classList.remove("active"));
           btn.classList.add("active");
           choice.innerHTML = `<div class="format-choice-title">#${i + 1} — choose a format</div>`;
@@ -573,12 +619,102 @@
 
       const vidSection = makeSection("Video");
       data.items.forEach((item, i) => {
-        vidSection.row.appendChild(makeButton(`Video #${i + 1}`, false, () => {
+        vidSection.row.appendChild(makeButton(`Vid#${i + 1}`, false, () => {
           if (!isGenerating) sendPrompt(`generate video for ${i + 1}`);
         }));
       });
       body.appendChild(vidSection.el);
+      imgSection.row.classList.add("num-row");
+      vidSection.row.classList.add("num-row");
+
+      highlightTerms(body.querySelector(".bubble-text"), data.items.flatMap((it) => it.terms || []));
     }
+  }
+
+  // ----- Highlighted terms: tap a word to see its meaning in English + Telugu -----
+  function highlightTerms(container, terms) {
+    const unique = [...new Set(terms.map((t) => t.trim()).filter((t) => t.length > 1))]
+      .sort((a, b) => b.length - a.length);
+    if (!container || !unique.length) return;
+    // Match word forms too: "Vulnerability" also finds "vulnerabilities", "Penetration Testing" finds "penetration tester".
+    const stem = (w) => {
+      const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (w.length < 5) return esc;
+      const root = w.replace(/(ies|ing|ers|er|es|ed|s|y)$/i, "");
+      return root.length >= 4 ? `${root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\w*` : esc;
+    };
+    const variants = unique.map((t) => t.split(/[\s-]+/).map(stem).join("[\\s-]+"));
+    const pattern = new RegExp(`\\b(${variants.join("|")})\\b`, "gi");
+    const seen = new Set();
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach((node) => {
+      const text = node.nodeValue;
+      pattern.lastIndex = 0;
+      if (!pattern.test(text)) return;
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      text.replace(pattern, (match, _g, offset) => {
+        const key = match.toLowerCase();
+        frag.appendChild(document.createTextNode(text.slice(last, offset)));
+        if (seen.has(key)) {
+          frag.appendChild(document.createTextNode(match)); // highlight each term once per digest
+        } else {
+          seen.add(key);
+          const span = document.createElement("span");
+          span.className = "term";
+          span.textContent = match;
+          span.dataset.term = match;
+          span.dataset.context = text.slice(Math.max(0, offset - 120), offset + match.length + 120);
+          frag.appendChild(span);
+        }
+        last = offset + match.length;
+        return match;
+      });
+      frag.appendChild(document.createTextNode(text.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    });
+  }
+
+  const termCache = {};
+  function setupTermPopover() {
+    const pop = document.createElement("div");
+    pop.className = "term-popover hidden";
+    pop.innerHTML = `<div class="term-popover-head"><span class="term-popover-title"></span><button type="button" aria-label="Close">&times;</button></div>
+      <div class="term-popover-meaning"></div><div class="term-popover-telugu"></div>`;
+    document.body.appendChild(pop);
+    const hide = () => pop.classList.add("hidden");
+    pop.querySelector("button").addEventListener("click", hide);
+    document.addEventListener("click", async (e) => {
+      const term = e.target.closest(".term");
+      if (!term) {
+        if (!e.target.closest(".term-popover")) hide();
+        return;
+      }
+      e.preventDefault();
+      const word = term.dataset.term;
+      pop.querySelector(".term-popover-title").textContent = word;
+      pop.querySelector(".term-popover-meaning").textContent = "Looking it up...";
+      pop.querySelector(".term-popover-telugu").textContent = "";
+      const r = term.getBoundingClientRect();
+      const width = Math.min(320, window.innerWidth - 24);
+      pop.style.width = `${width}px`;
+      pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - width - 12))}px`;
+      pop.style.top = `${r.bottom + window.scrollY + 8}px`;
+      pop.classList.remove("hidden");
+      try {
+        const key = word.toLowerCase();
+        termCache[key] = termCache[key] || await (await fetch(
+          `/api/v1/define?term=${encodeURIComponent(word)}&context=${encodeURIComponent(term.dataset.context || "")}`)).json();
+        if (pop.querySelector(".term-popover-title").textContent !== word) return; // another word was tapped
+        pop.querySelector(".term-popover-meaning").textContent = termCache[key].meaning || "No meaning found.";
+        pop.querySelector(".term-popover-telugu").textContent = termCache[key].telugu || "";
+      } catch (err) {
+        pop.querySelector(".term-popover-meaning").textContent = "Couldn't load the meaning right now.";
+      }
+    });
+    window.addEventListener("scroll", hide, true);
   }
 
   function makeSection(title) {
@@ -695,7 +831,11 @@
       .replace(/>/g, "&gt;")
       .replace(/^#{1,4}\s+(.+)$/gm, "<strong>$1</strong>")
       .replace(/^\s*[*-]\s+/gm, "• ")
-      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+      // Bold only for headings / titles / sub-headings: a whole bold line (optionally followed by [..]),
+      // or a bold "Label:" at the start of a line. Bold words inside sentences become plain text.
+      .replace(/^(\W{0,3}\s*)\*\*([^*\n]+?)\*\*(\s*(\[[^\]\n]*\])?\s*)$/gm, "$1<strong>$2</strong>$3")
+      .replace(/^(\W{0,3}\s*)\*\*([^*\n]{1,40}:)\*\*/gm, "$1<strong>$2</strong>")
+      .replace(/\*\*(.*?)\*\*/g, "$1")
       .replace(/\*(.*?)\*/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/(?:^|\n)\s*---\s*(?:\n|$)/g, '<hr class="news-divider">')

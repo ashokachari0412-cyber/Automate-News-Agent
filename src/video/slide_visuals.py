@@ -35,20 +35,21 @@ POST_ROLES = [
     "COVER: the scroll-stopping first image showing the real subject of the story",
     "WHAT'S NEW: what the product/update actually does, shown in a real setting",
     "KEY TAKEAWAYS: the concrete use case or capability in action",
-    "WHY IT MATTERS: the real-world impact on people, teams or an industry",
+    "WHY IT MATTERS: the concrete result or change the story brings (shown through the thing itself, not people reacting)",
 ]
 
 # Distinct real-world shot types. Each carousel uses 4 different ones (rotated per story),
 # so images never repeat the same "person at a laptop" scene.
 SHOT_TYPES = [
-    "PRODUCT HERO: the actual device, product or hardware from the story as the clear hero, studio lighting, clean backdrop",
-    "IN-USE CLOSE-UP: hands actually using the product/tool from the story (phone, laptop, robot, camera, car), shallow depth of field",
-    "REAL WORKPLACE: the real kind of place where this story happens (lab, data center aisle, newsroom, hospital, factory, studio)",
-    "PEOPLE AT WORK: the real professionals this story affects (developers, doctors, designers, drivers) doing that exact job",
-    "WIDE ENVIRONMENT: a wide establishing shot of the real industry or setting the story is about",
-    "COMPANY CONTEXT: a real office, campus, keynote stage or event setting matching the company in the story (no logos)",
-    "BEFORE/AFTER IN PRACTICE: a real scene showing the task the story changes, as it is done today",
-    "DETAIL MACRO: an extreme close-up of the most relevant physical detail of the story (a chip, a sensor, a screen edge, a robot hand)",
+    "PRODUCT HERO: the actual device, product, model or hardware from the story as the clear hero, studio lighting, clean backdrop",
+    "MECHANISM: a clear physical visual of HOW the technology works (e.g. memory -> an organised archive of linked index cards; "
+    "coding agent -> an editor window with blurred code and a terminal; chip -> silicon wafer), no people",
+    "REAL PLACE: the real place where this story happens (lab, data center aisle, server room, factory, hospital, studio), no people",
+    "DETAIL MACRO: an extreme close-up of the most relevant physical detail (a chip, a sensor, a screen edge, a robot hand, a cable)",
+    "IN-USE CLOSE-UP: only hands using the product/tool from the story (phone, laptop, robot, camera), face not visible",
+    "WIDE ENVIRONMENT: a wide establishing shot of the industry or setting the story is about, no people in focus",
+    "RESULT: the concrete output the story produces (generated image on a monitor, a built app on a phone, a robot finishing a task)",
+    "SYMBOLIC OBJECT: one striking real object that directly represents the story's core idea, minimal background",
 ]
 
 PALETTES = [
@@ -70,17 +71,17 @@ Images (each one MUST use its assigned shot type and colour palette):
 {roles}
 
 For each image return:
-- "prompt": a photo prompt (40-70 words) for a REAL-WORLD, photorealistic editorial photograph,
-  as if shot by a professional photographer for Wired, Bloomberg or The Verge: real people, real
-  offices, real laptops/phones/screens/hardware, real places, natural or practical lighting,
-  35mm or 50mm lens, shallow depth of field, candid and authentic.
+- "prompt": a photo prompt (40-70 words) for a photorealistic editorial photograph, as if shot for
+  Wired, Bloomberg or The Verge: real objects, hardware, screens, places, natural or practical lighting,
+  35mm or 50mm lens, shallow depth of field.
   RELEVANCE IS THE TOP PRIORITY: a viewer must understand what the story is about from the photo alone.
-  Name the concrete subject explicitly in the prompt (the actual product type, device, industry,
-  profession or place from the story). NO abstract metaphors or unrelated props (no chess pieces,
-  headphones, sticky notes, coffee cups, plants, typewriters unless the story is literally about them).
+  First decide WHAT the story is about (a model, a coding tool, a memory feature, a chip, a robot...),
+  then show THAT thing or how it works, not people reacting to it.
+  Name the concrete subject explicitly in the prompt (the actual product type, device, mechanism or place).
+  NO PEOPLE by default. People (or just hands) may appear in at most ONE image, and only if the story is
+  about people, jobs or a product held in the hand. Never "a person/developer/team at a laptop".
+  NO unrelated props (no chess pieces, headphones, sticky notes, coffee cups, plants, typewriters).
   The 4 images must look different from each other: different subject, camera distance and angle.
-  At most ONE image may show a person sitting at a desk/computer.
-  When people appear, vary age, gender and ethnicity.
   NEVER: holograms, neon glow, glowing circuits, sci-fi, futuristic cities, digital brains,
   abstract data streams, 3D renders, illustrations, cartoons.
   Vertical 4:5 composition with the main subject in the upper two-thirds (bottom third is for text).
@@ -94,7 +95,7 @@ Return JSON: {{"posts": [{{"prompt": "...", "headline": "...", "text": "..."}}, 
 IMAGE_SUFFIX = (
     ", photorealistic real-world photograph, ultra sharp, crisp fine detail, high resolution, "
     "professional DSLR, 50mm, editorial photography, clean composition, no blur, no noise, "
-    "no text, no watermark"
+    "no text, no watermark, no generic office workers at laptops"
 )
 
 # Per-model skip-until times: a model out of quota is skipped for a while instead of retried on
@@ -109,7 +110,7 @@ _POLLINATIONS_MIN_INTERVAL = 15.0
 _last_pollinations_call = 0.0
 
 
-PLAN_VERSION = "v4"  # bump to invalidate cached plans/photos when the art direction changes
+PLAN_VERSION = "v5"  # bump to invalidate cached plans/photos when the art direction changes
 
 
 def _story_key(item: PrioritizedNewsItem) -> str:
@@ -126,16 +127,21 @@ def _assign_shots(key: str) -> List[str]:
 
 
 def _fallback_posts(item: PrioritizedNewsItem) -> List[Dict[str, str]]:
+    """Used when Gemini can't plan the carousel: subject-first scenes, no generic people-at-laptops."""
     points = list(item.key_bullet_points or [])[:3]
-    subject = item.title
+    subject = f"{item.title} ({item.category})"
     return [
-        {"prompt": f"Candid photo of a software developer at a desk with a laptop, reacting to news about {subject}",
+        {"prompt": f"Editorial product-style photo that clearly represents: {subject}. The technology itself as the hero, "
+                   "dramatic studio lighting, clean dark backdrop, no people",
          "headline": item.title, "text": item.hook or item.summary[:160]},
-        {"prompt": f"Over-the-shoulder photo of a person using a laptop in a bright modern office, working with {subject}",
+        {"prompt": f"Close-up photo showing how this works: {item.summary[:200]}. Real hardware or a monitor with "
+                   "blurred unreadable interface, shallow depth of field, no people",
          "headline": "What's new", "text": item.summary[:180]},
-        {"prompt": f"Small team collaborating around a laptop in a real startup office, discussing {subject}",
+        {"prompt": f"Extreme macro photo of the most relevant physical detail of {subject}, such as a chip, "
+                   "a screen edge or a circuit board, crisp detail, no people",
          "headline": "Key takeaways", "text": "\n".join(points)},
-        {"prompt": "Wide photo of a busy modern open-plan office with people working on computers, natural daylight",
+        {"prompt": f"Wide photo of the real place where {subject} is used, such as a modern server room or lab, "
+                   "natural light, no people",
          "headline": "Why it matters", "text": item.why_it_matters[:180]},
     ]
 

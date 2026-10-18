@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+
+# Vosk model is copied in at build time; see README
+app/src/main/assets/model-en-in/

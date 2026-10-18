@@ -40,6 +40,8 @@ class PrioritizedNewsItem(BaseModel):
     published_at: Optional[datetime] = Field(default=None, description="Actual publication timestamp from source")
     vocabulary: Dict[str, str] = Field(default_factory=dict, description="Simple meanings of technical terms in this update")
     image_prompt: str = Field(default="", description="Detailed, high-tech prompt to generate an image tailored to this exact news update")
+    scanned_at: Optional[datetime] = Field(default=None, description="When the scan that found this story ran (digest = latest scan only)")
+    shown_at: Optional[datetime] = Field(default=None, description="When this story was first shown to the user in a digest")
 
 
 class NewsRankingResult(BaseModel):

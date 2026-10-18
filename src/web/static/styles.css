@@ -626,9 +626,9 @@ body.alfred-theme {
 }
 
 .send-action-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
+  width: 37px;
+  height: 37px;
+  border-radius: 10px; /* Claude-style rounded square */
   background-color: var(--accent-terracotta);
   border: none;
   color: #fff;
@@ -642,7 +642,6 @@ body.alfred-theme {
 
 .send-action-btn:hover:not(:disabled) {
   background-color: var(--accent-terracotta-hover);
-  transform: scale(1.04);
 }
 
 .send-action-btn:disabled {
@@ -1118,7 +1117,14 @@ a.msg-action-btn {
 /* Quick chips above the input (AI Updates) */
 .quick-chips {
   display: flex;
-  gap: 8px;
+  flex-wrap: nowrap; /* G-Intelligence, AI Updates and Content-Monitor stay on one line */
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.quick-chips::-webkit-scrollbar {
+  display: none;
 }
 
 .quick-chip {
@@ -1140,6 +1146,124 @@ a.msg-action-btn {
 .quick-chip:hover:not(:disabled) {
   background: var(--accent-terracotta);
   color: #fff;
+}
+
+.quick-chip {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* G-Intelligence toggle: outlined when off, filled when on */
+.quick-chip.toggle {
+  background: transparent;
+}
+
+.quick-chip.toggle.active {
+  background: var(--accent-terracotta);
+  color: #fff;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.quick-chip.pulse {
+  animation: chip-pulse 0.6s ease;
+}
+
+@keyframes chip-pulse {
+  50% { transform: scale(0.94); }
+}
+
+@media (max-width: 420px) {
+  .quick-chip {
+    padding: 5px 9px;
+    font-size: 0.76em;
+    gap: 4px;
+  }
+}
+
+/* Img#1 / Vid#1 boxes in the news digest */
+.num-row .msg-action-btn {
+  border: 1.5px solid var(--accent-terracotta);
+  color: var(--accent-terracotta);
+  background: rgba(217, 119, 87, 0.08);
+  font-weight: 600;
+  padding: 6px 12px;
+}
+
+.num-row .msg-action-btn.active,
+.num-row .msg-action-btn:hover:not(:disabled) {
+  background: var(--accent-terracotta);
+  color: #fff;
+}
+
+/* Editable caption */
+.caption-edit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 0.92em;
+  line-height: 1.5;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.caption-edit:focus {
+  border-color: var(--border-focus);
+}
+
+/* Highlighted terms in news updates + meaning popover */
+.term {
+  color: #f2b880;
+  text-decoration: underline dotted rgba(242, 184, 128, 0.7);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.term-popover {
+  position: absolute;
+  z-index: 1000;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-focus);
+  background: var(--bg-card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.term-popover.hidden {
+  display: none;
+}
+
+.term-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.term-popover-title {
+  font-weight: 700;
+  color: var(--accent-terracotta);
+}
+
+.term-popover-head button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.2em;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.term-popover-telugu {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-light);
+  color: var(--text-secondary);
 }
 
 .attachment-chip {
@@ -1332,4 +1456,56 @@ a.msg-action-btn {
   overflow: hidden;
   padding: 0;
   background: none;
+}
+
+
+/* ==============================================================================
+   MOBILE: tighter side margins, chips on one line
+   ============================================================================== */
+@media (max-width: 640px) {
+  .workspace-inner {
+    padding: 20px 10px 16px 10px;
+  }
+  .chat-footer {
+    padding: 0 8px 10px 8px;
+  }
+  .input-card {
+    padding: 10px 10px 8px 10px;
+  }
+  .chat-bubble {
+    gap: 8px;
+  }
+  .chat-bubble.assistant .bubble-avatar {
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+  }
+  .chat-bubble.user .bubble-body {
+    max-width: 88%;
+  }
+  .digest-section {
+    padding: 10px;
+  }
+  /* The three chips share the line; long labels shrink instead of being cut off */
+  .quick-chip {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
+    padding: 5px 8px;
+    gap: 4px;
+  }
+  .quick-chip span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 480px) {
+  .quick-chip svg {
+    display: none;
+  }
+  .quick-chip {
+    font-size: 0.74em;
+  }
 }

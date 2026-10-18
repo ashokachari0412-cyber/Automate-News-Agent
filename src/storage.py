@@ -1,9 +1,12 @@
 """Shared on-disk persistence: news cache and Alfred conversation memory."""
 
+import hashlib
 import json
 import logging
+import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -16,6 +19,8 @@ ARTIFACTS_DIR = BASE_DIR / "artifacts"
 NEWS_CACHE_FILE = ARTIFACTS_DIR / "news_cache.json"
 CHAT_MEMORY_FILE = ARTIFACTS_DIR / "chat_memory.json"
 CHAT_HISTORY_FILE = ARTIFACTS_DIR / "chat_history.json"
+CAPTIONS_FILE = ARTIFACTS_DIR / "captions.json"
+DEFINITIONS_FILE = ARTIFACTS_DIR / "definitions.json"
 MAX_SESSIONS = 15
 
 
@@ -36,11 +41,118 @@ def save_news(items: Dict[str, PrioritizedNewsItem]) -> None:
     NEWS_CACHE_FILE.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
 
-def merge_news(items: List[PrioritizedNewsItem]) -> None:
-    cache = load_news()
-    for it in items:
+SEEN_DAYS = 3        # a story shown to the user in the last 3 days is not shown again
+KEEP_DAYS = 7        # older stories are dropped from the cache
+SIMILAR_TITLE = 0.72  # headline similarity that counts as the same story
+
+
+def _norm_title(title: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", title.lower()))
+
+
+def _story_key(it: PrioritizedNewsItem) -> str:
+    """Stable id: same source link / headline -> same id on every scan (positional ids collided across days)."""
+    basis = sorted(it.source_urls)[0] if it.source_urls else _norm_title(it.title)
+    return "n_" + hashlib.sha1(basis.encode()).hexdigest()[:10]
+
+
+def _same_story(a: PrioritizedNewsItem, b: PrioritizedNewsItem) -> bool:
+    if set(a.source_urls) & set(b.source_urls):
+        return True
+    ta, tb = _norm_title(a.title), _norm_title(b.title)
+    return SequenceMatcher(None, ta, tb).ratio() >= SIMILAR_TITLE or (len(ta) > 15 and (ta in tb or tb in ta))
+
+
+def _as_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def apply_scan(cache: Dict[str, PrioritizedNewsItem], items: List[PrioritizedNewsItem]) -> List[PrioritizedNewsItem]:
+    """Add a fresh scan to the cache (in place) and return only the genuinely new stories, best first.
+
+    - duplicates inside the scan are merged (highest score wins)
+    - stories already SHOWN to the user in the last SEEN_DAYS are skipped
+      (scheduled background scans don't count as "seen")
+    - stories older than KEEP_DAYS are pruned
+    """
+    now = datetime.now(timezone.utc)
+    for old_id in [k for k, v in cache.items() if (_as_utc(v.scanned_at) or datetime.min.replace(tzinfo=timezone.utc)) < now - timedelta(days=KEEP_DAYS)]:
+        del cache[old_id]
+    recent = [v for v in cache.values() if _as_utc(v.shown_at) and _as_utc(v.shown_at) >= now - timedelta(days=SEEN_DAYS)]
+
+    fresh: List[PrioritizedNewsItem] = []
+    for it in sorted(items, key=lambda x: x.scores.total, reverse=True):
+        if any(_same_story(it, f) for f in fresh):
+            continue  # duplicate within this scan
+        if any(_same_story(it, r) for r in recent):
+            continue  # already shown recently
+        fresh.append(it.model_copy(update={"id": _story_key(it), "scanned_at": now}))
+
+    for it in fresh:
         cache[it.id] = it
+    logger.info(f"Scan: {len(items)} stories -> {len(fresh)} new (duplicates / recently shown removed)")
+    return fresh
+
+
+def mark_shown(cache: Dict[str, PrioritizedNewsItem], items: List[PrioritizedNewsItem]) -> None:
+    """Remember which stories the user has seen, so later scans don't repeat them."""
+    now = datetime.now(timezone.utc)
+    for it in items:
+        if it.id in cache and not cache[it.id].shown_at:
+            cache[it.id] = cache[it.id].model_copy(update={"shown_at": now})
+
+
+def latest_scan(cache: Dict[str, PrioritizedNewsItem]) -> List[PrioritizedNewsItem]:
+    """Stories from the most recent scan that found something new, best first.
+    Legacy entries without scanned_at (old positional ids) are ignored once stamped stories exist."""
+    stamped = [v for v in cache.values() if v.scanned_at]
+    if not stamped:
+        return sorted(cache.values(), key=lambda x: x.scores.total, reverse=True)
+    newest = max(_as_utc(v.scanned_at) for v in stamped)
+    batch = [v for v in stamped if _as_utc(v.scanned_at) == newest]
+    return sorted(batch, key=lambda x: x.scores.total, reverse=True)
+
+
+def merge_news(items: List[PrioritizedNewsItem]) -> List[PrioritizedNewsItem]:
+    cache = load_news()
+    fresh = apply_scan(cache, items)
     save_news(cache)
+    return fresh
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception as e:
+        logger.warning(f"Failed to read {path.name}: {e}")
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def load_caption(news_id: str) -> Optional[str]:
+    return _read_json(CAPTIONS_FILE).get(news_id)
+
+
+def save_caption(news_id: str, caption: str) -> None:
+    data = _read_json(CAPTIONS_FILE)
+    data[news_id] = caption
+    _write_json(CAPTIONS_FILE, data)
+
+
+def load_definition(term: str) -> Optional[dict]:
+    return _read_json(DEFINITIONS_FILE).get(term.lower())
+
+
+def save_definition(term: str, definition: dict) -> None:
+    data = _read_json(DEFINITIONS_FILE)
+    data[term.lower()] = definition
+    _write_json(DEFINITIONS_FILE, data)
 
 
 def load_memory() -> dict:

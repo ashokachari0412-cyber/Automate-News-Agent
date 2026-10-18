@@ -33,6 +33,7 @@ from src import progress, storage
 from src.google_workspace import auth as google_auth
 from src.google_workspace.agent import is_workspace_query, run_workspace_agent
 from src.google_workspace.router import router as google_router
+from src.api.voice import router as voice_router
 from src.video.carousel_generator import CarouselGenerator
 from src.video.generator import VideoGenerator
 
@@ -50,6 +51,7 @@ app = FastAPI(
 )
 
 app.include_router(google_router)
+app.include_router(voice_router)
 
 
 PUBLIC_PWA_PATHS = {"/manifest.webmanifest", "/sw.js", "/favicon.png", "/logo.png",
@@ -149,6 +151,11 @@ class AlfredChatRequest(BaseModel):
     job_id: Optional[str] = None  # lets the UI poll /api/v1/progress/{job_id} for live steps
     context_news_id: Optional[str] = None
     history: Optional[List[Dict[str, str]]] = None
+    mode: Optional[str] = None  # "google" = G-Intelligence: answer from the connected Google apps
+
+
+class CaptionRequest(BaseModel):
+    caption: str
 
 
 class PublishCarouselRequest(BaseModel):
@@ -168,9 +175,9 @@ async def startup_event():
 
 @app.get("/api/v1/news")
 async def get_all_news():
-    """Returns all currently cached & prioritized AI news items."""
+    """Returns the current digest (latest scan), best first."""
     _load_news_cache()
-    items = list(_cached_news.values())
+    items = _ranked_news()
     return {
         "count": len(items),
         "items": [item.model_dump() for item in items],
@@ -192,15 +199,14 @@ async def trigger_fresh_scan():
     logger.info("Alfred initiating full research scan...")
     try:
         result = await run_research_workflow()
-        for item in result.items:
-            _cached_news[item.id] = item
+        fresh = storage.apply_scan(_cached_news, result.items)
         _save_news_cache()
 
         return {
             "status": "success",
-            "message": f"Scan complete. Gathered {result.total_tweets_collected} raw items and prioritized {len(result.items)} high-value stories.",
-            "count": len(result.items),
-            "items": [it.model_dump() for it in result.items],
+            "message": f"Scan complete. Gathered {result.total_tweets_collected} raw items; {len(fresh)} new stories (duplicates and recently shown removed).",
+            "count": len(fresh),
+            "items": [it.model_dump() for it in fresh],
         }
     except Exception as e:
         logger.error(f"Scan failed: {e}")
@@ -259,6 +265,40 @@ async def get_carousel_slide(news_id: str, slide_num: int):
     return FileResponse(slide_file, media_type="image/png")
 
 
+@app.post("/api/v1/carousel/{news_id}/caption")
+async def save_caption(news_id: str, payload: CaptionRequest):
+    """Saves the edited caption; publishing uses it instead of generating a new one."""
+    caption = payload.caption.strip()
+    if not caption:
+        raise HTTPException(status_code=400, detail="Caption is empty")
+    storage.save_caption(news_id, caption)
+    return {"status": "saved", "caption": caption}
+
+
+DEFINE_PROMPT = """Explain the term "{term}" for a non-expert, as used in this AI news context: "{context}".
+Return ONLY JSON: {{"meaning": "<one or two simple English sentences>",
+"telugu": "<the same meaning in simple Telugu, written in Telugu script>"}}"""
+
+
+@app.get("/api/v1/define")
+async def define_term(term: str, context: str = ""):
+    """Simple English + Telugu meaning of a highlighted word, cached on disk."""
+    term = term.strip()[:80]
+    if not term:
+        raise HTTPException(status_code=400, detail="term is required")
+    cached = storage.load_definition(term)
+    if cached:
+        return cached
+    try:
+        data = await _llm_client.generate_json(DEFINE_PROMPT.format(term=term, context=context[:300]))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch the meaning: {e}")
+    result = {"term": term, "meaning": str(data.get("meaning", "")).strip(), "telugu": str(data.get("telugu", "")).strip()}
+    if result["meaning"]:
+        storage.save_definition(term, result)
+    return result
+
+
 @app.post("/api/v1/carousel/publish/{news_id}")
 async def publish_carousel(news_id: str, payload: PublishCarouselRequest):
     """Publishes the 4-slide carousel to Instagram and selected platforms."""
@@ -267,7 +307,7 @@ async def publish_carousel(news_id: str, payload: PublishCarouselRequest):
     if not item:
         raise HTTPException(status_code=404, detail="News item not found")
 
-    caption = await _generate_post_caption(item)
+    caption = storage.load_caption(news_id) or await _generate_post_caption(item)
     if payload.format == "single":
         brand = "linkedin" if payload.brand == "linkedin" else "instagram"
         slide_paths = [CAROUSELS_DIR / news_id / f"single_{brand}.png"]
@@ -309,20 +349,34 @@ async def publish_carousel(news_id: str, payload: PublishCarouselRequest):
 # Alfred AI Assistant Endpoints
 # ==============================================================================
 
-ALFRED_SYSTEM_PROMPT = """You are Alfred, the legendary executive AI butler and trusted confidant to Master Ashok (@ashok_a.i), inspired by Batman's loyal butler Alfred Pennyworth.
+ALFRED_SYSTEM_PROMPT = """You are Alfred, the executive AI butler of Master Ashok (@ashok_a.i), inspired by Alfred Pennyworth:
+polite, warm, witty and highly competent, with expert knowledge of AI, agents, frontier models and social media content.
 
-Your Persona:
-- Extremely articulate, dignified, polite, witty, and exceptionally competent.
-- Address Master Ashok with refined respect ("Master Ashok" or "Sir").
-- You possess world-class technical expertise in Artificial Intelligence, autonomous agents, frontier models, and social media content strategy.
-- Your advice is sharp, direct, high-value, and executive. Avoid fluff or generic robotic responses.
-- You can explain complex AI papers in crystal-clear plain English, draft punchy hooks, critique slides, or analyze market trends.
+How to answer:
+- Answer ONLY the latest message. Use earlier conversation only when the new message clearly refers to it;
+  never bring up old topics on your own (a "hi" gets a short friendly greeting, nothing else).
+- Be brief: greetings and small talk in 1-2 sentences; normal questions in 2-5 sentences or up to 5 bullets.
+  Go longer only when he explicitly asks for detail, a list, a script or an explanation.
+- No filler, no repeating the question, no long sign-offs.
+- If you don't know, say so plainly and say WHY, e.g.:
+  "I don't know that, sir: it happened after my training data." /
+  "I can't see your Google data from here, sir: switch on G-Intelligence and connect Google." /
+  "I don't have live prices, sir: that needs a web search tool, which I don't have yet."
+  Never guess or invent facts, numbers, files, emails or events.
 """
 
+
+NEWS_WORDS = re.compile(r"\b(news|story|stories|digest|updates?|headlines?|article|post|carousel|script|number \d)\b|#\d", re.I)
+
+
+def _has_any(text: str, words: List[str]) -> bool:
+    """Whole-word / whole-phrase match, so "short" doesn't fire on "shortly" or "image" on "imagine"."""
+    return any(re.search(rf"\b{re.escape(w)}\b", text) for w in words)
+
+
 def _ranked_news() -> List[PrioritizedNewsItem]:
-    items = list(_cached_news.values())
-    items.sort(key=lambda x: getattr(getattr(x, "scores", None), "total", 0), reverse=True)
-    return items
+    """The current digest: stories from the latest scan only, best first (older scans stay cached for references)."""
+    return storage.latest_scan(_cached_news)
 
 
 ATTACHMENT_MAX_CHARS = 60000
@@ -396,6 +450,12 @@ async def open_chat_session(session_id: str):
 @app.post("/api/v1/alfred/chat")
 async def alfred_chat(req: AlfredChatRequest):
     """Conversational endpoint with Alfred; every turn is persisted to disk as memory."""
+    return await run_alfred_chat(req)
+
+
+async def run_alfred_chat(req: AlfredChatRequest, remember_as: Optional[str] = None) -> Dict[str, Any]:
+    """Shared by the web chat and the voice assistant, so both use one brain and one memory.
+    remember_as: the message to store in memory instead of req.message (voice adds speaking hints)."""
     _load_news_cache()
     memory = storage.load_memory()
     history = [{"role": m["role"], "content": m["content"]} for m in memory.get("messages", [])]
@@ -406,7 +466,7 @@ async def alfred_chat(req: AlfredChatRequest):
     finally:
         progress.finish(req.job_id)
 
-    memory.setdefault("messages", []).append({"role": "user", "content": req.message})
+    memory.setdefault("messages", []).append({"role": "user", "content": remember_as or req.message})
     memory["messages"].append({"role": "assistant", "content": response["reply"],
                                **{k: v for k, v in response.items() if k not in ("reply", "author")}})
     if response.get("news_id"):
@@ -435,11 +495,12 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             logger.error(f"Attachment chat error: {e}")
             return {"reply": f"I could not read that file properly, Master Ashok: {e}", "author": "Alfred"}
 
-    # 0. Intent: personal Google data (Drive / Calendar / Gmail) via Gemini tool calling
-    if is_workspace_query(msg_lower):
+    # 0. Intent: personal Google data (Drive / Docs / Calendar / Gmail / Photos) via Gemini tool calling.
+    #    G-Intelligence mode sends every message here, like Gemini with the Google apps connected.
+    if req.mode == "google" or is_workspace_query(msg_lower):
         if not google_auth.is_connected():
-            return {"reply": "Please connect your Google account first (the **Connect Google** button at the top), Master Ashok.",
-                    "author": "Alfred"}
+            return {"reply": "I can't see your Google data yet, Master Ashok: please connect your Google account first "
+                             "(the **Connect Google** button at the top, opened in Chrome).", "author": "Alfred"}
         try:
             progress.report("Looking through your Google account (Gmail, Drive, Calendar)...")
             return {"author": "Alfred", **await run_workspace_agent(req.message, history)}
@@ -454,20 +515,27 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         "sweep news", "sweep feeds", "show news", "ai news", "what is the news today",
         "give me today news", "give me the news", "tell me the news", "tell me today news"
     ]
-    if any(trigger in msg_lower for trigger in scan_triggers):
+    if _has_any(msg_lower, scan_triggers):
         try:
             if not _cached_news or "scan" in msg_lower or "sweep" in msg_lower:
                 progress.report("Starting a fresh scan of AI news from the last 24 hours...")
                 workflow_res = await run_research_workflow()
-                for it in workflow_res.items:
-                    _cached_news[it.id] = it
+                fresh = storage.apply_scan(_cached_news, workflow_res.items)
                 _save_news_cache()
+                if not fresh:
+                    return {
+                        "reply": ("No fresh AI news since your last update, Master Ashok. Everything the labs posted in the "
+                                  "last 24 hours was already in your digest. I'll have new stories as soon as they break."),
+                        "author": "Alfred",
+                    }
         except Exception as err:
             logger.warning(f"Live scan fallback to cache: {err}")
             progress.report("Live scan had a problem, using the most recent saved news instead...")
 
         progress.report("Writing your news digest...")
         top_items = _ranked_news()[:4]
+        storage.mark_shown(_cached_news, top_items)
+        _save_news_cache()
 
         digest_blocks = [
             f"Here is your executive AI intelligence digest for today, Master Ashok. We have synthesized {len(top_items)} high-priority breakthroughs strictly from the last 24 hours:\n"
@@ -491,7 +559,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             "reply": full_reply,
             "author": "Alfred",
             "action": "news_digest",
-            "items": [{"id": it.id, "title": it.title} for it in top_items],
+            "items": [{"id": it.id, "title": it.title, "terms": list((it.vocabulary or {}).keys())[:8]} for it in top_items],
         }
 
     # Helper: Find referenced story (by number 1, 2, 3 or title keywords)
@@ -516,7 +584,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
 
     # 2. Intent: Generate Carousel / Images / Slides
     carousel_triggers = ["carousel", "image", "images", "slide", "slides", "photos", "infographic"]
-    if any(t in msg_lower for t in carousel_triggers) and any(w in msg_lower for w in ["generate", "create", "make", "show", "give", "build", "craft", "for", "news"]):
+    if _has_any(msg_lower, carousel_triggers) and _has_any(msg_lower, ["generate", "create", "make", "show", "give", "build", "craft", "for", "news"]):
         target = find_target_news()
         if target:
             progress.report(f"Picked the story: \"{target.title[:70]}\"")
@@ -551,7 +619,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
 
     # 3. Intent: Generate Video Script / Blueprint
     video_triggers = ["video", "script", "blueprint", "reel", "short", "tiktok", "voiceover"]
-    if any(t in msg_lower for t in video_triggers) and any(w in msg_lower for w in ["generate", "create", "make", "draft", "write", "show", "give", "for", "news"]):
+    if _has_any(msg_lower, video_triggers) and _has_any(msg_lower, ["generate", "create", "make", "draft", "write", "show", "give", "for", "news"]):
         target = find_target_news()
         if target:
             progress.report(f"Writing a 35-40s video script with hook and scenes for \"{target.title[:60]}\"...")
@@ -576,19 +644,20 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
 
     # 4. General conversational query with persistent memory
     context_lines = []
-    ranked = _ranked_news()[:4]
+    ranked = _ranked_news()[:4] if NEWS_WORDS.search(msg_lower) else []
     if ranked:
         context_lines.append("[Current news digest]")
         context_lines += [f"{i}. {it.title} — {it.summary}" for i, it in enumerate(ranked, 1)]
     focus_id = req.context_news_id or last_news_id
-    item = _cached_news.get(focus_id) if focus_id else None
+    item = _cached_news.get(focus_id) if focus_id and NEWS_WORDS.search(msg_lower) else None
     if item:
         context_lines.append(f"\n[Story currently in focus]\nTitle: {item.title}\nCategory: {item.category}\nSummary: {item.summary}\nWhy it matters: {item.why_it_matters}")
 
     full_prompt = "\n".join(context_lines) + f"\n\nUser message from Master Ashok: \"{req.message}\"\n\nRespond as Alfred in character:"
     try:
         progress.report("Thinking about your question...")
-        reply = await _llm_client.generate_text(full_prompt, system_prompt=ALFRED_SYSTEM_PROMPT, history=history)
+        # Short history window: enough for follow-ups, without dragging old topics (and tokens) into every reply.
+        reply = await _llm_client.generate_text(full_prompt, system_prompt=ALFRED_SYSTEM_PROMPT, history=history[-6:])
         return {"reply": reply.strip(), "author": "Alfred"}
     except Exception as e:
         logger.error(f"Alfred chat error: {e}")

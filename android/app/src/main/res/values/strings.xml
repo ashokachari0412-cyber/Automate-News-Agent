@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Alfred</string>
+    <string name="settings_label">Settings</string>
+    <string name="a11y_desc">Lets Alfred press WhatsApp\'s Send button so messages go out hands-free.</string>
+</resources>
