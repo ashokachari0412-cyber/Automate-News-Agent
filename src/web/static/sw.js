@@ -1,7 +1,5 @@
-// Minimal service worker: makes Alfred installable. Always uses the network
-// (no offline caching) so news, images and API replies are never stale.
+// Minimal service worker: makes Alfred installable. It does not intercept requests, so the browser
+// (and the Android app) handle network errors normally and can show a proper "can't reach" screen.
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
-self.addEventListener("fetch", (event) => {
-  event.respondWith(fetch(event.request));
-});
+self.addEventListener("fetch", () => {});

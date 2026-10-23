@@ -157,7 +157,8 @@ async def voice_command(cmd: VoiceCommand) -> VoiceReply:
     from src.api.main import AlfredChatRequest, run_alfred_chat  # lazy: main imports this module
 
     try:
-        result = await run_alfred_chat(AlfredChatRequest(message=transcript + VOICE_HINT), remember_as=transcript)
+        # The voice style hint is kept apart from his words, so it can't influence routing.
+        result = await run_alfred_chat(AlfredChatRequest(message=transcript, style_hint=VOICE_HINT))
         reply = result.get("reply", "")
     except Exception as e:
         logger.error(f"Voice chat failed: {e}")

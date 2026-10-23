@@ -42,6 +42,8 @@ class PrioritizedNewsItem(BaseModel):
     image_prompt: str = Field(default="", description="Detailed, high-tech prompt to generate an image tailored to this exact news update")
     scanned_at: Optional[datetime] = Field(default=None, description="When the scan that found this story ran (digest = latest scan only)")
     shown_at: Optional[datetime] = Field(default=None, description="When this story was first shown to the user in a digest")
+    origin: str = Field(default="Official feed", description="Where the story came from: Official feed, Gemini + Google Search, or both")
+    source_name: str = Field(default="", description="Publisher / feed name, e.g. OpenAI Official or TechCrunch")
 
 
 class NewsRankingResult(BaseModel):

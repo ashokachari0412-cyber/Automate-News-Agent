@@ -16,7 +16,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alfred" />
-  <link rel="stylesheet" href="styles.css?v=13" />
+  <link rel="stylesheet" href="styles.css?v=15" />
 </head>
 <body class="alfred-theme">
 
@@ -129,15 +129,19 @@
           <button class="quick-chip toggle" id="g-intel-btn" type="button" aria-pressed="false"
                   title="G-Intelligence: ask about your Google apps (Drive, Docs, Sheets, Gmail, Calendar, Photos)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 12h-9"/></svg>
-            <span>G-Intelligence</span>
+            <span class="lbl-full">G-Intelligence</span><span class="lbl-short">G-Intel</span>
           </button>
           <button class="quick-chip" id="ai-updates-btn" type="button" title="Scan the latest 24h AI news">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49"/></svg>
-            <span>AI Updates</span>
+            <span class="lbl-full">AI Updates</span><span class="lbl-short">AI News</span>
+          </button>
+          <button class="quick-chip" id="custom-script-btn" type="button" title="Write your own script for a video or image">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            <span class="lbl-full">Custom Script</span><span class="lbl-short">Script</span>
           </button>
           <button class="quick-chip" id="content-monitor-btn" type="button" title="Content-Monitor (coming soon)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
-            <span>Content-Monitor</span>
+            <span class="lbl-full">Content-Monitor</span><span class="lbl-short">Monitor</span>
           </button>
         </div>
         <div class="input-controls-row">
@@ -171,6 +175,32 @@
       </div>
     </footer>
 
+    <!-- Custom Script panel -->
+    <div class="script-panel hidden" id="script-panel" role="dialog" aria-label="Custom script">
+      <div class="script-panel-card">
+        <div class="script-panel-head">
+          <h3>Custom Script</h3>
+          <button type="button" class="close-drawer-btn" id="script-close">✕</button>
+        </div>
+        <div class="script-kind" role="tablist">
+          <button type="button" class="script-kind-btn active" data-kind="video">Video (9:16 · HeyGen)</button>
+          <button type="button" class="script-kind-btn" data-kind="image">Image</button>
+        </div>
+        <div class="script-heygen" id="script-heygen">Checking HeyGen...</div>
+        <textarea id="script-text" rows="8" placeholder="Write exactly what you will say. Alfred keeps your words, splits them into clips and adds the visuals."></textarea>
+        <div class="script-aspect hidden" id="script-aspect">
+          <span>Ratio</span>
+          <select id="script-aspect-select">
+            <option value="4:5">4:5 post</option>
+            <option value="1:1">1:1 square</option>
+            <option value="9:16">9:16 story</option>
+            <option value="16:9">16:9 wide</option>
+          </select>
+        </div>
+        <button type="button" class="msg-action-btn primary script-go" id="script-go">Generate video</button>
+      </div>
+    </div>
+
     <!-- History Drawer / Modal -->
     <div class="history-drawer hidden" id="history-drawer">
       <div class="history-header">
@@ -182,7 +212,7 @@
     <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   </div>
 
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=16"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW registration failed:", e));

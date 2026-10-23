@@ -16,6 +16,9 @@ import android.webkit.HttpAuthHandler
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
@@ -39,6 +42,18 @@ class MainActivity : Activity() {
             webViewClient = object : WebViewClient() {
                 override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler, host: String, realm: String) {
                     handler.proceed("alfred", prefs.password) // the studio's APP_PASSWORD basic auth
+                }
+
+                // Instead of a silent black screen, say why the studio didn't load and offer a retry.
+                override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                    if (request.isForMainFrame) failOver(error.description?.toString() ?: "network error")
+                }
+
+                override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                    if (request.isForMainFrame && response.statusCode >= 400) {
+                        if (response.statusCode == 401) showOffline("wrong password (check Settings)")
+                        else failOver("server error ${response.statusCode}")
+                    }
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -64,11 +79,22 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        // Reload when the server URL was changed in Settings.
-        if (prefs.serverUrl != loadedUrl) {
-            loadedUrl = prefs.serverUrl
-            web.loadUrl(loadedUrl)
-        }
+        // Reload when the server URLs were changed in Settings.
+        if (loadedUrl !in prefs.routes()) loadRoute(0)
+    }
+
+    private var routeIndex = 0
+
+    private fun loadRoute(index: Int) {
+        routeIndex = index
+        loadedUrl = prefs.routes()[index]
+        web.loadUrl(loadedUrl)
+    }
+
+    /** Main route failed: try the backup route before showing the offline screen. */
+    private fun failOver(reason: String) {
+        if (routeIndex + 1 < prefs.routes().size) loadRoute(routeIndex + 1)
+        else showOffline(reason)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -97,6 +123,24 @@ class MainActivity : Activity() {
             return
         }
         startForegroundService(Intent(this, AlfredService::class.java))
+    }
+
+    private fun showOffline(reason: String) {
+        val safe = android.text.Html.escapeHtml(reason)
+        val server = android.text.Html.escapeHtml(prefs.routes().joinToString("  |  "))
+        routeIndex = 0
+        loadedUrl = prefs.serverUrl
+        val html = """
+            <html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="background:#121214;color:#f6f6f6;font-family:sans-serif;padding:32px 20px;text-align:center">
+              <h2 style="color:#d97757">Can't reach Alfred</h2>
+              <p style="color:#9ea0a6">$safe</p>
+              <p style="color:#65676e;font-size:13px;word-break:break-all">$server</p>
+              <p style="color:#9ea0a6;font-size:14px">Check that the PC is on, the server is running and Tailscale is connected on this phone.</p>
+              <button onclick="location.href='${android.text.Html.escapeHtml(prefs.serverUrl)}'" style="margin-top:16px;padding:12px 28px;border:0;border-radius:10px;background:#d97757;color:#fff;font-size:16px">Retry</button>
+            </body></html>
+        """.trimIndent()
+        web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
     }
 
     private fun download(url: String, disposition: String?, mime: String?) {

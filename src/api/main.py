@@ -34,6 +34,7 @@ from src.google_workspace import auth as google_auth
 from src.google_workspace.agent import is_workspace_query, run_workspace_agent
 from src.google_workspace.router import router as google_router
 from src.api.voice import router as voice_router
+from src import studio
 from src.video.carousel_generator import CarouselGenerator
 from src.video.generator import VideoGenerator
 
@@ -56,6 +57,9 @@ app.include_router(voice_router)
 
 PUBLIC_PWA_PATHS = {"/manifest.webmanifest", "/sw.js", "/favicon.png", "/logo.png",
                     "/icon-192.png", "/icon-512.png", "/icon-512-maskable.png"}
+
+
+ACCESS_LOG = BASE_DIR / "artifacts" / "access.log"
 
 
 @app.middleware("http")
@@ -110,6 +114,23 @@ _llm_client = LLMClient(settings)
 _cached_news: Dict[str, PrioritizedNewsItem] = {}
 
 
+@app.middleware("http")
+async def access_log(request, call_next):
+    """One line per request (path, status, type, client) so phone/app issues can be diagnosed remotely."""
+    response = await call_next(request)
+    try:
+        ua = request.headers.get("user-agent", "")[:60]
+        line = (f"{time.strftime('%Y-%m-%d %H:%M:%S')} {request.method} {request.url.path} -> {response.status_code} "
+                f"{response.headers.get('content-type', '-')} | {request.headers.get('x-forwarded-for', request.client.host if request.client else '-')} | {ua}\n")
+        with open(ACCESS_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
+        if ACCESS_LOG.stat().st_size > 2_000_000:
+            ACCESS_LOG.write_text("".join(ACCESS_LOG.read_text(encoding="utf-8").splitlines(True)[-2000:]), encoding="utf-8")
+    except Exception:
+        pass
+    return response
+
+
 def _load_news_cache():
     _cached_news.update(storage.load_news())
 
@@ -152,6 +173,8 @@ class AlfredChatRequest(BaseModel):
     context_news_id: Optional[str] = None
     history: Optional[List[Dict[str, str]]] = None
     mode: Optional[str] = None  # "google" = G-Intelligence: answer from the connected Google apps
+    style_hint: Optional[str] = None  # extra reply-style instructions (voice); never used for routing
+    aspect: Optional[str] = None  # image aspect ratio chosen in the Custom Script panel
 
 
 class CaptionRequest(BaseModel):
@@ -278,6 +301,48 @@ async def save_caption(news_id: str, payload: CaptionRequest):
 DEFINE_PROMPT = """Explain the term "{term}" for a non-expert, as used in this AI news context: "{context}".
 Return ONLY JSON: {{"meaning": "<one or two simple English sentences>",
 "telugu": "<the same meaning in simple Telugu, written in Telugu script>"}}"""
+
+
+@app.get("/api/v1/studio/heygen")
+async def heygen_status(refresh: bool = False):
+    """Checks the HeyGen key, credits, avatar and voice (re-reads .env, no restart needed)."""
+    try:
+        return {"ready": True, **(await studio.resolve_heygen(force=refresh))}
+    except Exception as e:
+        return {"ready": False, "reason": str(e)}
+
+
+@app.post("/api/v1/studio/jobs/{job_id}/approve")
+async def studio_job_approve(job_id: str):
+    """He tapped Render: only now does anything paid (HeyGen, Omni Flash) run."""
+    job = await studio.approve_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/v1/studio/jobs/{job_id}/cancel")
+async def studio_job_cancel(job_id: str):
+    job = await studio.cancel_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/api/v1/studio/jobs/{job_id}")
+async def studio_job(job_id: str):
+    job = await studio.job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/api/v1/studio/files/{name}")
+async def studio_file(name: str):
+    path = studio.studio_file(name)
+    if not path:
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path)
 
 
 @app.get("/api/v1/define")
@@ -478,6 +543,100 @@ async def run_alfred_chat(req: AlfredChatRequest, remember_as: Optional[str] = N
     return response
 
 
+ROUTER_PROMPT = """You route Master Ashok's latest chat message to ONE action of his AI studio. Decide from the
+meaning of HIS message (use the recent conversation only to resolve references like "that one" or "the second story").
+
+Actions:
+- "chat": greetings, small talk, opinions, general knowledge, explanations, questions about a news story's content.
+- "news": he wants the latest AI news / updates / digest.
+- "carousel": he wants the 4-image Instagram carousel (images / photos / slides) for a news story.
+- "single_image": he wants ONE branded post image for a news story (single photo, or a LinkedIn post image).
+- "video_script": he wants a video / reel / YouTube Short made, about a news story OR any topic he describes.
+- "image": he wants an image/picture/photo/illustration of something he describes (not a news-story post).
+- "google": anything about HIS OWN Google data: Drive files/folders/documents, Gmail, Calendar, Photos,
+  subscriptions, salary/CTC/offer letters or other personal documents.
+
+Current news digest (story numbers):
+{digest}
+
+Recent conversation:
+{history}
+
+His message: "{message}"
+
+Return ONLY JSON: {{"intent": "chat|news|carousel|single_image|video_script|image|google",
+"story": <story number from the digest or null>, "brand": "instagram|linkedin|null",
+"fresh_scan": <true if he asks for the latest/new/today's news or a scan, else false>}}"""
+
+INTENTS = {"chat", "news", "carousel", "single_image", "video_script", "image", "google"}
+
+
+def _keyword_route(msg_lower: str) -> Dict[str, Any]:
+    """Backup router (used only if the AI router fails)."""
+    route: Dict[str, Any] = {"intent": "chat", "story": None, "brand": None, "fresh_scan": True}
+    if is_workspace_query(msg_lower):
+        route["intent"] = "google"
+    elif _has_any(msg_lower, ["scan news", "today news", "today's news", "latest news", "breaking news", "ai news",
+                              "ai updates", "give me the news", "tell me the news"]):
+        route["intent"] = "news"
+    elif _has_any(msg_lower, ["carousel", "image", "images", "slide", "slides", "photos"]) and \
+            _has_any(msg_lower, ["generate", "create", "make", "build", "for"]):
+        route["intent"] = "single_image" if _has_any(msg_lower, ["single", "linkedin"]) else "carousel"
+    elif _has_any(msg_lower, ["video", "script", "reel", "tiktok"]) and _has_any(msg_lower, ["generate", "create", "make", "write", "for"]):
+        route["intent"] = "video_script"
+    m = re.search(r"\b(\d)\b", msg_lower)
+    route["story"] = int(m.group(1)) if m else None
+    route["brand"] = "linkedin" if "linkedin" in msg_lower else "instagram"
+    return route
+
+
+async def _route_intent(message: str, history: List[Dict[str, str]]) -> Dict[str, Any]:
+    """The AI decides what to do with the message; keyword rules are only a fallback."""
+    digest = "\n".join(f"{i}. {it.title}" for i, it in enumerate(_ranked_news()[:6], 1)) or "(no digest yet)"
+    recent = "\n".join(f"{h['role']}: {' '.join(h['content'].split())[:200]}" for h in history[-4:]) or "(none)"
+    try:
+        data = await _llm_client.generate_json(ROUTER_PROMPT.format(digest=digest, history=recent, message=message[:1000]))
+        if data.get("intent") in INTENTS:
+            story = data.get("story")
+            return {"intent": data["intent"], "story": story if isinstance(story, int) else None,
+                    "brand": "linkedin" if data.get("brand") == "linkedin" else "instagram",
+                    "fresh_scan": bool(data.get("fresh_scan", True))}
+    except Exception as e:
+        logger.warning(f"AI router failed, using keyword routing: {e}")
+    return _keyword_route(message.lower())
+
+
+async def _studio_video(brief: str, custom_script: bool = False, news_id: Optional[str] = None) -> Dict[str, Any]:
+    """Plan the clips, show them, and start the HeyGen render in the background."""
+    progress.report("Planning the hook and the time-coded clips..." if not custom_script
+                    else "Splitting your script into clips and planning the visuals...")
+    try:
+        plan = await studio.plan_video(brief, custom_script=custom_script)
+    except Exception as e:
+        return {"reply": f"I couldn't plan the video, Master Ashok: {e}", "author": "Alfred"}
+    job = await studio.start_video_job(plan)
+    if job["status"] == "failed":
+        note = f"\n\nI can't render it yet: {job['message']}"
+    else:
+        est = job["estimate"]
+        top = {"wan": "Wan 2.6 Flash", "omni_flash": "Gemini Omni Flash"}.get(est["top_engine"], "free zoom/pan")
+        note = (f"\n\nNothing has been rendered yet. Estimated cost: about ${est['total_usd']} "
+                f"(HeyGen {est['heygen_engine']} ${est['heygen_usd']} + top half {top} ${est['content_usd']}). "
+                "Tap Render when you're happy with the plan.")
+    return {"reply": "Here's the plan for your video:\n\n" + studio.plan_markdown(plan) + note, "author": "Alfred",
+            "action": "video_job", "job_id": job["id"], "news_id": news_id}
+
+
+async def _studio_image(request: str, aspect: Optional[str] = None, exact_prompt: bool = False) -> Dict[str, Any]:
+    progress.report("Creating your image...")
+    try:
+        img = await studio.make_image(request, aspect, exact_prompt=exact_prompt)
+    except Exception as e:
+        return {"reply": f"I couldn't create the image, Master Ashok: {e}", "author": "Alfred"}
+    return {"reply": f"Here's your image ({img['aspect']}).", "author": "Alfred", "action": "image",
+            "image_url": img["url"], "prompt": img["prompt"]}
+
+
 async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], last_news_id: Optional[str]) -> Dict[str, Any]:
     msg_lower = req.message.lower().strip()
 
@@ -495,9 +654,17 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             logger.error(f"Attachment chat error: {e}")
             return {"reply": f"I could not read that file properly, Master Ashok: {e}", "author": "Alfred"}
 
+    # The AI router decides the action from his actual words (G-Intelligence mode always means Google).
+    if req.mode == "custom_video":
+        return await _studio_video(req.message, custom_script=True)
+    if req.mode == "custom_image":
+        return await _studio_image(req.message, req.aspect, exact_prompt=True)
+    route = {"intent": "google"} if req.mode == "google" else await _route_intent(req.message, history)
+    intent = route["intent"]
+    logger.info(f"Router: {intent} {route} <- {req.message[:80]!r}")
+
     # 0. Intent: personal Google data (Drive / Docs / Calendar / Gmail / Photos) via Gemini tool calling.
-    #    G-Intelligence mode sends every message here, like Gemini with the Google apps connected.
-    if req.mode == "google" or is_workspace_query(msg_lower):
+    if intent == "google":
         if not google_auth.is_connected():
             return {"reply": "I can't see your Google data yet, Master Ashok: please connect your Google account first "
                              "(the **Connect Google** button at the top, opened in Chrome).", "author": "Alfred"}
@@ -509,15 +676,9 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             return {"reply": f"I could not reach your Google data: {e}", "author": "Alfred"}
 
     # 1. Intent: Scan News / Today News / Breaking News
-    scan_triggers = [
-        "scan news", "today news", "today's news", "get me the today news",
-        "get me today news", "get today news", "latest news", "breaking news",
-        "sweep news", "sweep feeds", "show news", "ai news", "what is the news today",
-        "give me today news", "give me the news", "tell me the news", "tell me today news"
-    ]
-    if _has_any(msg_lower, scan_triggers):
+    if intent == "news":
         try:
-            if not _cached_news or "scan" in msg_lower or "sweep" in msg_lower:
+            if not _cached_news or route.get("fresh_scan", True):
                 progress.report("Starting a fresh scan of AI news from the last 24 hours...")
                 workflow_res = await run_research_workflow()
                 fresh = storage.apply_scan(_cached_news, workflow_res.items)
@@ -533,7 +694,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             progress.report("Live scan had a problem, using the most recent saved news instead...")
 
         progress.report("Writing your news digest...")
-        top_items = _ranked_news()[:4]
+        top_items = _ranked_news()[:settings.TOP_NEWS_LIMIT]
         storage.mark_shown(_cached_news, top_items)
         _save_news_cache()
 
@@ -542,9 +703,10 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         ]
         for i, item in enumerate(top_items, 1):
             score = round(item.scores.total) if getattr(item, "scores", None) else 95
+            source = f"{item.origin} · {item.source_name}" if item.source_name else item.origin
             item_lines = [
                 f"**{i}. {item.title}** [Impact: {score}/100]",
-                f"*Category: {item.category}*",
+                f"*Category: {item.category} · Source: {source}*",
                 f"{item.summary}"
             ]
             if item.key_bullet_points:
@@ -567,6 +729,9 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         items = _ranked_news()
         if not items:
             return None
+        story = route.get("story")
+        if isinstance(story, int) and 1 <= story <= len(items):
+            return items[story - 1]
         padded = f" {msg_lower} "
         for idx in range(1, len(items) + 1):
             patterns = [f"news {idx}", f"story {idx}", f"number {idx}", f"item {idx}", f"#{idx}", f"for {idx}", f" {idx} "]
@@ -583,13 +748,12 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         return items[0]
 
     # 2. Intent: Generate Carousel / Images / Slides
-    carousel_triggers = ["carousel", "image", "images", "slide", "slides", "photos", "infographic"]
-    if _has_any(msg_lower, carousel_triggers) and _has_any(msg_lower, ["generate", "create", "make", "show", "give", "build", "craft", "for", "news"]):
+    if intent in ("carousel", "single_image"):
         target = find_target_news()
         if target:
             progress.report(f"Picked the story: \"{target.title[:70]}\"")
-        if target and ("single" in msg_lower or "linkedin" in msg_lower):
-            brand = "linkedin" if "linkedin" in msg_lower else "instagram"
+        if target and intent == "single_image":
+            brand = route.get("brand") or "instagram"
             await _carousel_generator.generate_single_async(target, brand)
             where = "LinkedIn (Ashokachari P)" if brand == "linkedin" else "Instagram (@ashok_a.i)"
             return {
@@ -618,29 +782,19 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             }
 
     # 3. Intent: Generate Video Script / Blueprint
-    video_triggers = ["video", "script", "blueprint", "reel", "short", "tiktok", "voiceover"]
-    if _has_any(msg_lower, video_triggers) and _has_any(msg_lower, ["generate", "create", "make", "draft", "write", "show", "give", "for", "news"]):
-        target = find_target_news()
-        if target:
-            progress.report(f"Writing a 35-40s video script with hook and scenes for \"{target.title[:60]}\"...")
-            bp = await _content_agent.generate_blueprint(target)
-            scenes_text = [
-                f"**Scene {sc.scene_number} ({sc.timestamp}):**\n*Visual: {sc.visual_description}*\n\"{sc.spoken_script}\"\n[Popup: {sc.on_screen_text}]"
-                for sc in bp.scenes
-            ]
-            reply_text = (
-                f"Master Ashok, here is your 35-40s video script blueprint for **\"{target.title}\"**:\n\n"
-                f"🎯 **Hook:** \"{bp.hook}\"\n\n"
-                + "\n\n".join(scenes_text) + "\n\n"
-                f"⚡ **Estimated Duration:** {bp.estimated_duration_seconds}s"
-            )
-            return {
-                "reply": reply_text,
-                "author": "Alfred",
-                "action": "video_script",
-                "news_id": target.id,
-                "title": target.title,
-            }
+    if intent == "video_script":
+        # A news story (by number or name) becomes the brief; otherwise his own words are the brief.
+        items = _ranked_news()
+        story = route.get("story")
+        if isinstance(story, int) and 1 <= story <= len(items):
+            t = items[story - 1]
+            brief = (f"News story: {t.title}\nSummary: {t.summary}\nKey points: {'; '.join(t.key_bullet_points or [])}\n"
+                     f"Why it matters: {t.why_it_matters}\nHis request: {req.message}")
+            return await _studio_video(brief, news_id=t.id)
+        return await _studio_video(req.message)
+
+    if intent == "image":
+        return await _studio_image(req.message, req.aspect)
 
     # 4. General conversational query with persistent memory
     context_lines = []
@@ -653,7 +807,8 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     if item:
         context_lines.append(f"\n[Story currently in focus]\nTitle: {item.title}\nCategory: {item.category}\nSummary: {item.summary}\nWhy it matters: {item.why_it_matters}")
 
-    full_prompt = "\n".join(context_lines) + f"\n\nUser message from Master Ashok: \"{req.message}\"\n\nRespond as Alfred in character:"
+    full_prompt = ("\n".join(context_lines) + f"\n\nUser message from Master Ashok: \"{req.message}\""
+                   + (req.style_hint or "") + "\n\nRespond as Alfred in character:")
     try:
         progress.report("Thinking about your question...")
         # Short history window: enough for follow-ups, without dragging old topics (and tokens) into every reply.

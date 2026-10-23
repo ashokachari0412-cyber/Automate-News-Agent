@@ -24,7 +24,16 @@ class BackendClient(private val prefs: Prefs) {
     private val http = OkHttpClient.Builder().callTimeout(25, TimeUnit.SECONDS).build()
     private val history = ArrayDeque<JSONObject>()
 
+    /** Tries the main route, then the backup route. */
     suspend fun command(transcript: String): VoiceReply = withContext(Dispatchers.IO) {
+        var last: Exception? = null
+        for (base in prefs.routes()) {
+            try { return@withContext commandVia(base, transcript) } catch (e: java.io.IOException) { last = e }
+        }
+        throw last ?: IllegalStateException("No server URL configured")
+    }
+
+    private fun commandVia(base: String, transcript: String): VoiceReply {
         val nav = JSONObject()
             .put("title", NavState.title).put("text", NavState.text).put("subtext", NavState.subtext)
             .put("age_seconds", NavState.ageSeconds() ?: JSONObject.NULL)
@@ -32,7 +41,7 @@ class BackendClient(private val prefs: Prefs) {
             .put("transcript", transcript).put("nav", nav).put("history", JSONArray(history.toList()))
 
         val req = Request.Builder()
-            .url("${prefs.serverUrl}/api/v1/voice/command")
+            .url("$base/api/v1/voice/command")
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .apply {
                 if (prefs.password.isNotEmpty()) {
@@ -41,7 +50,7 @@ class BackendClient(private val prefs: Prefs) {
                 }
             }.build()
 
-        http.newCall(req).execute().use { resp ->
+        return http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Server returned ${resp.code}")
             val j = JSONObject(resp.body!!.string())
             val a = j.optJSONObject("action") ?: JSONObject()

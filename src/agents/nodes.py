@@ -29,6 +29,16 @@ class ResearchState(TypedDict, total=False):
     error: Optional[str]
 
 
+def _origin(tweets) -> str:
+    """Label where a story came from (a story found by both counts as confirmed by both)."""
+    kinds = {"gemini" if t.author_handle == "gemini_search" else "feed" for t in tweets}
+    if kinds == {"gemini"}:
+        return "Gemini + Google Search"
+    if kinds == {"feed", "gemini"}:
+        return "Official feed + Gemini"
+    return "Official feed"
+
+
 class ResearchNodes:
     """Encapsulates node execution logic."""
 
@@ -49,6 +59,13 @@ class ResearchNodes:
                 max_age_hours=settings.MAX_TWEET_AGE_HOURS,
             )
             logger.info(f"Collected {len(tweets)} raw tweets.")
+            if settings.GEMINI_NEWS_SEARCH:
+                # Second source: Gemini + Google Search looks for big stories the feeds missed.
+                from src.collectors.gemini_search import search_ai_news
+                progress.report(f"Got {len(tweets)} posts from the official feeds; asking Gemini + Google Search for anything they missed...")
+                known = [t.text.split(". ")[0][:120] for t in tweets]
+                # Search results go first so they always fall inside the ranking window (top 30 candidates).
+                tweets = await search_ai_news(settings.MAX_TWEET_AGE_HOURS, known) + tweets
             return {"raw_tweets": tweets, "accounts": accounts}
         except Exception as e:
             logger.error(f"Error in collect_tweets_node: {e}")
@@ -158,7 +175,7 @@ class ResearchNodes:
             })
 
         prompt_input = NEWS_EVALUATION_PROMPT.format(
-            tweets_json=json.dumps(candidates_payload[:15], indent=2)
+            tweets_json=json.dumps(candidates_payload[:30], indent=2)
         )
 
         llm_response = await self.llm_client.generate_json(
@@ -213,6 +230,9 @@ class ResearchNodes:
                         source_urls.append(tw.source_url)
                     tweet_ids.append(tw.id)
 
+                story_tweets = (associated_cluster.tweets if associated_cluster
+                                else clusters[idx].tweets if idx < len(clusters) else [])
+
                 # Get publication timestamp from source tweet/feed item
                 published_at = None
                 if associated_cluster and associated_cluster.tweets:
@@ -235,6 +255,8 @@ class ResearchNodes:
                     why_it_matters=item_data.get("why_it_matters", ""),
                     suggested_video_angle=item_data.get("suggested_video_angle", ""),
                     primary_source_handle=primary_handle,
+                    origin=_origin(story_tweets),
+                    source_name=(story_tweets[0].author_name if story_tweets else primary_handle),
                     source_urls=list(set(source_urls))[:4],
                     source_tweet_ids=tweet_ids,
                     published_at=published_at,

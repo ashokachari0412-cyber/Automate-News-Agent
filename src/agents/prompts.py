@@ -21,7 +21,7 @@ LANGUAGE STYLE — STRICT PLAIN ENGLISH:
 """
 
 NEWS_EVALUATION_PROMPT = """Analyze the following clustered candidate tweets and news items from trusted AI accounts.
-Select between 2 to 4 of the most important, high-value AI news stories that audiences care most about.
+Select up to 6 of the most important, high-value AI news stories that audiences care most about: aim for 5-6 when there is enough genuinely important news, fewer only when there is not. Never more than 6. Candidates from "gemini_search" (found via Google Search) are judged by the same rules as the official feeds.
 
 Selection Rules:
 - Return 2 to 4 items based on true importance and audience interest. If 4 strong stories exist, provide 4. If only 2 or 3 are truly high quality, provide 2 or 3. Never add filler.

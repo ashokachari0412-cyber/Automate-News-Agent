@@ -106,7 +106,11 @@ class Settings(BaseSettings):
     # Prioritization Parameters
     HIGH_PRIORITY_THRESHOLD: float = 75.0
     MEDIUM_PRIORITY_THRESHOLD: float = 50.0
-    TOP_NEWS_LIMIT: int = 4
+    TOP_NEWS_LIMIT: int = 6
+    # Backup LLM provider (used only when every Gemini model fails). Free key: console.groq.com -> API Keys
+    GROQ_API_KEY: Optional[str] = Field(default=None)
+    GROQ_MODELS: str = "llama-3.3-70b-versatile,openai/gpt-oss-120b,llama-3.1-8b-instant"
+    GEMINI_NEWS_SEARCH: bool = True  # second news source: Gemini + Google Search (in addition to the official feeds)
 
     def get_trusted_accounts(self) -> List[TwitterAccountConfig]:
         """Load configured trusted twitter accounts from YAML."""

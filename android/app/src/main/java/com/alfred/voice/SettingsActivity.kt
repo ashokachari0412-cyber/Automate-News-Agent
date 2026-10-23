@@ -34,8 +34,10 @@ class SettingsActivity : Activity() {
         fun button(t: String, onClick: () -> Unit) =
             col.addView(Button(this).apply { text = t; setOnClickListener { onClick() } }, MATCH_PARENT, -2)
 
-        label("Server URL (your PC or tunnel)")
+        label("Server URL (main route: PC's Tailscale IP)")
         val url = field(prefs.serverUrl)
+        label("Backup URL (used automatically if the main one fails)")
+        val backup = field(prefs.fallbackUrl)
         label("App password (APP_PASSWORD in .env, blank if none)")
         val pwd = field(prefs.password, secret = true)
         val headset = CheckBox(this).apply {
@@ -76,6 +78,7 @@ class SettingsActivity : Activity() {
             prefs.voiceEnabled = true
             prefs.alwaysListen = always.isChecked
             prefs.serverUrl = url.text.toString()
+            prefs.fallbackUrl = backup.text.toString()
             prefs.password = pwd.text.toString()
             prefs.useHeadsetMic = headset.isChecked
             stopService(Intent(this, AlfredService::class.java))

@@ -14,6 +14,7 @@
   const aiUpdatesBtn = document.getElementById("ai-updates-btn");
   const gIntelBtn = document.getElementById("g-intel-btn");
   const contentMonitorBtn = document.getElementById("content-monitor-btn");
+  const customScriptBtn = document.getElementById("custom-script-btn");
   const DEFAULT_PLACEHOLDER = "Type your request to Alfred...";
   let gIntelligence = false; // G-Intelligence on: typed questions go to the connected Google apps
   const SCAN_PROMPT = "Scan the latest 24h AI breaking news across all authorized labs and summarize the top discoveries.";
@@ -173,9 +174,57 @@
       chatInput.placeholder = gIntelligence ? "Ask about your Drive, Docs, Gmail, Calendar, Photos..." : DEFAULT_PLACEHOLDER;
       chatInput.focus();
     });
+    setupScriptPanel();
     contentMonitorBtn.addEventListener("click", () => {
       contentMonitorBtn.classList.add("pulse");
       setTimeout(() => contentMonitorBtn.classList.remove("pulse"), 600);
+    });
+  }
+
+  // Custom Script: his own words become a HeyGen video (kept verbatim) or an image prompt.
+  function setupScriptPanel() {
+    const panel = document.getElementById("script-panel");
+    const text = document.getElementById("script-text");
+    const go = document.getElementById("script-go");
+    const aspectRow = document.getElementById("script-aspect");
+    let kind = "video";
+    const setKind = (k) => {
+      kind = k;
+      panel.querySelectorAll(".script-kind-btn").forEach((b) => b.classList.toggle("active", b.dataset.kind === k));
+      aspectRow.classList.toggle("hidden", k !== "image");
+      document.getElementById("script-heygen").classList.toggle("hidden", k !== "video");
+      go.textContent = k === "video" ? "Generate video" : "Generate image";
+      text.placeholder = k === "video"
+        ? "Write exactly what you will say. Alfred keeps your words, splits them into clips and adds the visuals."
+        : "Describe the image: subject, setting, style, colours, any text you want on it.";
+    };
+    panel.querySelectorAll(".script-kind-btn").forEach((b) => b.addEventListener("click", () => setKind(b.dataset.kind)));
+    const close = () => panel.classList.add("hidden");
+    const heygenLine = document.getElementById("script-heygen");
+    const showHeygen = async () => {
+      heygenLine.className = "script-heygen";
+      heygenLine.textContent = "Checking HeyGen...";
+      try {
+        const h = await (await fetch("/api/v1/studio/heygen")).json();
+        heygenLine.classList.add(h.ready ? "ok" : "bad");
+        heygenLine.textContent = h.ready
+          ? `HeyGen ready · ${h.avatar_name || "your avatar"}${h.credits != null ? ` · ${h.credits} credits` : ""}`
+          : `HeyGen not ready: ${h.reason}`;
+      } catch (e) {
+        heygenLine.textContent = "Couldn't check HeyGen right now.";
+      }
+    };
+    customScriptBtn.addEventListener("click", () => { panel.classList.remove("hidden"); text.focus(); showHeygen(); });
+    document.getElementById("script-close").addEventListener("click", close);
+    panel.addEventListener("click", (e) => { if (e.target === panel) close(); });
+    go.addEventListener("click", () => {
+      const script = text.value.trim();
+      if (!script || isGenerating) return;
+      close();
+      text.value = "";
+      const aspect = document.getElementById("script-aspect-select").value;
+      if (kind === "video") sendPrompt(script, "Planning clips from your script...", "custom_video");
+      else sendPrompt(script, "Creating your image...", "custom_image", { aspect });
     });
   }
 
@@ -313,7 +362,7 @@
     sendPrompt(text, gIntelligence ? "Alfred is checking your Google apps..." : undefined, gIntelligence ? "google" : null);
   }
 
-  async function sendPrompt(text, thinkingLabel, mode = null) {
+  async function sendPrompt(text, thinkingLabel, mode = null, extra = {}) {
     if (heroSection) {
       heroSection.classList.add("hidden");
     }
@@ -338,6 +387,7 @@
           attachment_name: attachment ? attachment.name : null,
           attachment_text: attachment ? attachment.text : null,
           mode,
+          ...extra,
         }),
       });
 
@@ -560,6 +610,41 @@
       body.appendChild(block);
     }
 
+    if (data.action === "image" && data.image_url) {
+      const block = document.createElement("div");
+      block.className = "carousel-block";
+      const grid = document.createElement("div");
+      grid.className = "slide-grid single";
+      const link = document.createElement("a");
+      link.href = data.image_url;
+      link.addEventListener("click", (e) => { e.preventDefault(); openLightbox([data.image_url], 0); });
+      const img = document.createElement("img");
+      img.src = data.image_url;
+      img.alt = "Generated image";
+      img.addEventListener("load", scrollToBottom);
+      link.appendChild(img);
+      grid.appendChild(link);
+      block.appendChild(grid);
+      const actions = document.createElement("div");
+      actions.className = "msg-actions";
+      const dl = document.createElement("a");
+      dl.className = "msg-action-btn";
+      dl.href = data.image_url;
+      dl.download = "alfred-image.png";
+      dl.textContent = "Download";
+      actions.appendChild(dl);
+      block.appendChild(actions);
+      body.appendChild(block);
+    }
+
+    if (data.action === "video_job" && data.job_id) {
+      const box = document.createElement("div");
+      box.className = "video-job";
+      box.innerHTML = `<div class="video-job-status"><span class="video-job-dot"></span><span class="video-job-msg">Starting...</span></div>`;
+      body.appendChild(box);
+      watchVideoJob(data.job_id, box);
+    }
+
     if (data.action === "workspace" && Array.isArray(data.cards)) {
       const files = data.cards.filter((c) => c.type === "file");
       if (files.length) {
@@ -715,6 +800,57 @@
       }
     });
     window.addEventListener("scroll", hide, true);
+  }
+
+  // Polls a HeyGen render job until the 9:16 video is ready, then shows the player.
+  function watchVideoJob(jobId, box) {
+    const msg = box.querySelector(".video-job-msg");
+    const tick = async () => {
+      try {
+        const job = await (await fetch(`/api/v1/studio/jobs/${jobId}`)).json();
+        if (job.status === "done" && job.url) {
+          box.innerHTML = `<video class="video-job-player" controls playsinline preload="metadata" src="${job.url}"></video>
+            <div class="msg-actions"><a class="msg-action-btn" href="${job.url}" download="alfred-video.mp4">Download video</a></div>`;
+          scrollToBottom();
+          return;
+        }
+        if (job.status === "failed" || job.detail || job.status === "cancelled") {
+          box.classList.add("failed");
+          msg.textContent = job.message || job.detail || "The video failed.";
+          return;
+        }
+        if (job.status === "awaiting_approval") {
+          // Nothing paid runs until he confirms.
+          const est = job.estimate || {};
+          msg.textContent = `Ready to render · about $${est.total_usd ?? "?"} (HeyGen $${est.heygen_usd ?? "?"} + top half $${est.content_usd ?? "?"})`;
+          if (!box.querySelector(".video-job-actions")) {
+            const row = document.createElement("div");
+            row.className = "msg-actions video-job-actions";
+            const go = makeButton("Render video", true, async (btn) => {
+              btn.disabled = true;
+              btn.textContent = "Starting...";
+              await fetch(`/api/v1/studio/jobs/${jobId}/approve`, { method: "POST" });
+              row.remove();
+              tick();
+            });
+            const cancel = makeButton("Cancel", false, async () => {
+              await fetch(`/api/v1/studio/jobs/${jobId}/cancel`, { method: "POST" });
+              row.remove();
+              tick();
+            });
+            row.appendChild(go);
+            row.appendChild(cancel);
+            box.appendChild(row);
+          }
+          return; // stop polling until he decides
+        }
+        msg.textContent = job.message || "Working...";
+      } catch (e) {
+        msg.textContent = "Checking the render status...";
+      }
+      setTimeout(tick, 6000);
+    };
+    tick();
   }
 
   function makeSection(title) {
