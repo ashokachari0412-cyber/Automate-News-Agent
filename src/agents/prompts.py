@@ -20,13 +20,22 @@ LANGUAGE STYLE — STRICT PLAIN ENGLISH:
 - Output MUST be valid JSON matching the requested schema.
 """
 
-NEWS_EVALUATION_PROMPT = """Analyze the following clustered candidate tweets and news items from trusted AI accounts.
-Select up to 6 of the most important, high-value AI news stories that audiences care most about: aim for 5-6 when there is enough genuinely important news, fewer only when there is not. Never more than 6. Candidates from "gemini_search" (found via Google Search) are judged by the same rules as the official feeds.
+# Step 1 of the scan: pick the stories from HEADLINES ONLY (one short line each), to keep Gemini tokens low.
+NEWS_PICK_PROMPT = """Below are AI news headlines from the last 24 hours, one per line:
+id | source | headline - short description
 
-Selection Rules:
-- Return 2 to 4 items based on true importance and audience interest. If 4 strong stories exist, provide 4. If only 2 or 3 are truly high quality, provide 2 or 3. Never add filler.
-- Prioritize: Practical AI tools, major foundation model drops, agentic workflow breakthroughs, and viral open-source repositories.
-- De-prioritize: Narrow, hyper-academic papers that normal users cannot use or understand.
+{lines}
+
+Pick up to {limit} stories that creators, developers and everyday users would care about most: aim for {limit} when
+there is enough genuinely important news, fewer only when there is not. Never add filler.
+- Prioritize: practical AI tools, major model releases, agent breakthroughs, viral open source, big industry moves.
+- Skip: non-AI stories, narrow academic papers, minor updates, and duplicates of a story already picked.
+Score each pick 0-25 on impact, novelty, credibility and video_adaptability.
+Return ONLY JSON: {{"picks": [{{"id": "c1", "impact": 22, "novelty": 20, "credibility": 24, "video_adaptability": 21}}]}}"""
+
+# Step 2: write up only the picked stories (their short description is all the detail sent).
+NEWS_EVALUATION_PROMPT = """These AI news stories were already picked as the most important of the day. Write up EVERY one
+of them: one item per candidate, with candidate_id = its cluster_id. Use only the facts given; do not invent details.
 
 PLAIN ENGLISH & EMOJI INSTRUCTIONS:
 - Headline ('title'): Catchy, punchy, under 12 words.
@@ -44,7 +53,7 @@ PLAIN ENGLISH & EMOJI INSTRUCTIONS:
   * "Open Source"
   * "Research Breakthrough"
 
-Raw Tweet Candidates:
+Picked stories:
 {tweets_json}
 
 Return a JSON object with this exact structure:

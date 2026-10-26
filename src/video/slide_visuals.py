@@ -78,6 +78,17 @@ For each image return:
   First decide WHAT the story is about (a model, a coding tool, a memory feature, a chip, a robot...),
   then show THAT thing or how it works, not people reacting to it.
   Name the concrete subject explicitly in the prompt (the actual product type, device, mechanism or place).
+  BRAND FIRST: if the story is about a named product, model or company (Claude, ChatGPT, Gemini, Llama, Grok,
+  Copilot, Nvidia, Tesla...), image 1 MUST make that brand instantly recognizable: show its real logo in its
+  real brand colours, e.g. on a laptop or phone screen, a sign, a sticker or as a large physical object.
+  The image model may not know the logo, so DESCRIBE IT VISUALLY in the prompt (shape + colour), e.g.
+  "the Claude logo, a coral-orange starburst of thin straight rays, next to the word 'Claude' in a clean
+  serif font, on a warm cream background". Always put the brand NAME as clean on-screen text next to the
+  logo: image models can't copy logos exactly, but the name makes the brand unmistakable.
+  Tools built for or around a brand (a plugin, extension or open-source add-on for Claude, ChatGPT...) show
+  the brand they extend. Use the brand in at least 2 of the 4 images.
+  NEVER replace the product with a literal metaphor: no hard drive or memory chip for "memory", no brain
+  for "AI", no robot for "agent", unless the story really is about that hardware.
   NO PEOPLE by default. People (or just hands) may appear in at most ONE image, and only if the story is
   about people, jobs or a product held in the hand. Never "a person/developer/team at a laptop".
   NO unrelated props (no chess pieces, headphones, sticky notes, coffee cups, plants, typewriters).
@@ -85,17 +96,20 @@ For each image return:
   NEVER: holograms, neon glow, glowing circuits, sci-fi, futuristic cities, digital brains,
   abstract data streams, 3D renders, illustrations, cartoons.
   Vertical 4:5 composition with the main subject in the upper two-thirds (bottom third is for text).
-  No text, letters, logos or readable screens in the image.
+  The ONLY text allowed in an image is the brand or product name as part of its logo/screen; no other
+  readable text, no made-up logos.
 - "headline": punchy overlay headline, max 8 words, no emojis, no hashtags.
 - "text": supporting overlay text, max 30 words, plain sentences, no emojis.
   For KEY TAKEAWAYS use 3 short lines separated by "\\n", each max 9 words.
 
-Return JSON: {{"posts": [{{"prompt": "...", "headline": "...", "text": "..."}}, ... 4 items]}}"""
+Return JSON: {{"brand": "<the main product/company, or empty>",
+ "posts": [{{"prompt": "...", "headline": "...", "text": "..."}}, ... 4 items]}}"""
 
 IMAGE_SUFFIX = (
     ", photorealistic real-world photograph, ultra sharp, crisp fine detail, high resolution, "
     "professional DSLR, 50mm, editorial photography, clean composition, no blur, no noise, "
-    "no text, no watermark, no generic office workers at laptops"
+    "no watermark, no random or garbled text (a brand logo or name only where the prompt asks for it), "
+    "no generic office workers at laptops"
 )
 
 # Per-model skip-until times: a model out of quota is skipped for a while instead of retried on
@@ -131,8 +145,9 @@ def _fallback_posts(item: PrioritizedNewsItem) -> List[Dict[str, str]]:
     points = list(item.key_bullet_points or [])[:3]
     subject = f"{item.title} ({item.category})"
     return [
-        {"prompt": f"Editorial product-style photo that clearly represents: {subject}. The technology itself as the hero, "
-                   "dramatic studio lighting, clean dark backdrop, no people",
+        {"prompt": f"Editorial photo that clearly represents: {subject}. If it is a named product or company, show its "
+                   "real logo in its brand colours on a laptop screen as the hero (not a metaphor), dramatic studio "
+                   "lighting, clean dark backdrop, no people",
          "headline": item.title, "text": item.hook or item.summary[:160]},
         {"prompt": f"Close-up photo showing how this works: {item.summary[:200]}. Real hardware or a monitor with "
                    "blurred unreadable interface, shallow depth of field, no people",
@@ -231,7 +246,7 @@ def _render_with_wavespeed(prompt: str, label: str = "photo", aspect: str = "4:5
                 logger.warning(f"WaveSpeed image unavailable ({r.status_code}: {r.text[:200]}); falling back")
                 return None
             for i in range(90):  # ~3 minutes
-                time.sleep(2)
+                progress.sleep(2)
                 res = client.get(f"https://api.wavespeed.ai/api/v3/predictions/{job_id}/result", headers=auth).json()
                 res = res.get("data", res)
                 status = str(res.get("status", "")).lower()
@@ -305,7 +320,7 @@ def _render_with_pollinations(prompt: str, seed: int, label: str = "photo", aspe
             wait = _last_pollinations_call + _POLLINATIONS_MIN_INTERVAL * (attempt + 1) - time.monotonic()
             if wait > 0:
                 progress.report(f"Waiting about {int(wait)}s for the free image service before {label}...")
-                time.sleep(wait)
+                progress.sleep(wait)
             progress.report(f"Creating {label} with Flux (free image service)..."
                             if attempt == 0 else f"Retrying {label} (attempt {attempt + 1} of 5)...")
             try:
@@ -321,6 +336,111 @@ def _render_with_pollinations(prompt: str, seed: int, label: str = "photo", aspe
             finally:
                 _last_pollinations_call = time.monotonic()
     return None
+
+
+EDIT_ASPECTS = {"1:1": 1.0, "4:5": 0.8, "3:4": 0.75, "9:16": 0.5625, "16:9": 1.7778, "4:3": 1.3333, "2:3": 0.6667}
+
+
+def _nearest_aspect(path: Path) -> str:
+    from PIL import Image
+    w, h = Image.open(path).size
+    return min(EDIT_ASPECTS, key=lambda k: abs(EDIT_ASPECTS[k] - w / h))
+
+
+def _edit_with_wavespeed(src: Path, instruction: str, aspect: str) -> Optional[bytes]:
+    """Seedream 5.0 Flash Edit on WaveSpeed: the image + his instruction -> the changed image ($0.027)."""
+    cfg = _openai_env()
+    if not cfg["wavespeed_key"]:
+        return None
+    import io
+    from PIL import Image
+    auth = {"Authorization": f"Bearer {cfg['wavespeed_key']}"}
+    buf = io.BytesIO()
+    Image.open(src).convert("RGB").save(buf, "JPEG", quality=95)
+    try:
+        with httpx.Client(timeout=120, follow_redirects=True) as client:
+            up = client.post("https://api.wavespeed.ai/api/v3/media/upload/binary", headers=auth,
+                             files={"file": (f"{src.stem}.jpg", buf.getvalue(), "image/jpeg")})
+            image_url = (up.json().get("data") or {}).get("download_url") if up.status_code == 200 else None
+            if not image_url:
+                logger.warning(f"WaveSpeed upload for edit failed ({up.status_code}): {up.text[:200]}")
+                return None
+            r = client.post("https://api.wavespeed.ai/api/v3/bytedance/seedream-v5.0-flash/edit", headers=auth, json={
+                "prompt": instruction[:2000], "images": [image_url], "aspect_ratio": aspect,
+                "resolution": "2k", "output_format": "png"})
+            data = r.json()
+            data = data.get("data", data) if isinstance(data, dict) else {}
+            if r.status_code != 200 or not data.get("id"):
+                logger.warning(f"Seedream edit unavailable ({r.status_code}: {r.text[:200]})")
+                return None
+            for _ in range(90):  # ~3 minutes
+                progress.sleep(2)
+                res = client.get(f"https://api.wavespeed.ai/api/v3/predictions/{data['id']}/result", headers=auth).json()
+                res = res.get("data", res)
+                status = str(res.get("status", "")).lower()
+                if status == "completed":
+                    outputs = res.get("outputs") or []
+                    url = outputs[0] if isinstance(outputs, list) and outputs else None
+                    img = client.get(url) if url else None
+                    if img is not None and img.status_code == 200 and len(img.content) > 5000:
+                        from src import costs
+                        costs.record("WaveSpeed", f"Image edit · seedream-v5.0-flash ({aspect})", costs.SEEDREAM_PER_IMAGE)
+                        return img.content
+                    return None
+                if status in ("failed", "cancelled", "timeout", "deleted"):
+                    logger.warning(f"Seedream edit {status}: {res.get('error')}")
+                    return None
+    except Exception as e:
+        logger.warning(f"Seedream edit request failed ({e})")
+    return None
+
+
+def _edit_with_gemini(src: Path, instruction: str, llm: LLMClient) -> Optional[bytes]:
+    """Fallback: Nano Banana edits the image (free tier)."""
+    if not llm._client:
+        return None
+    from PIL import Image
+    from google.genai import types
+    for model in _image_models():
+        try:
+            response = llm._client.models.generate_content(
+                model=model, contents=[Image.open(src), instruction],
+                config=types.GenerateContentConfig(response_modalities=["IMAGE"]))
+            for part in response.candidates[0].content.parts:
+                if getattr(part, "inline_data", None) and part.inline_data.data:
+                    from src import costs
+                    costs.record("Google Gemini", f"Image edit · {FRIENDLY_MODEL_NAMES.get(model, model)}", 0.0, "free tier")
+                    return part.inline_data.data
+        except Exception as e:
+            logger.warning(f"{model} edit unavailable ({str(e)[:100]})")
+    return None
+
+
+def edit_image(src: Path, instruction: str, out: Path, llm: Optional[LLMClient] = None,
+               aspect: Optional[str] = None) -> Path:
+    """Modify: his words go straight to the image model together with the current image; the rest of the
+    picture is kept. Writes the result to `out` (the previous version is kept next to it as *.prev)."""
+    aspect = aspect or _nearest_aspect(src)
+    prompt = f"{instruction.strip()}. Keep everything else in the image the same."
+    progress.report("Sending your change to Seedream (image edit)...")
+    data = _edit_with_wavespeed(src, prompt, aspect)
+    if not data:
+        progress.report("Seedream edit unavailable, trying Nano Banana...")
+        data = _edit_with_gemini(src, prompt, llm or LLMClient(settings))
+    if not data:
+        raise RuntimeError("The image models couldn't make that change right now. Please try again in a minute.")
+    if out.exists():
+        out.with_name(out.stem + ".prev" + out.suffix).write_bytes(out.read_bytes())
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(data))
+    img.convert("RGB").save(out) if out.suffix.lower() in (".jpg", ".jpeg") else img.save(out)
+    return out
+
+
+def story_photo(item: PrioritizedNewsItem, index: int) -> Path:
+    """Where the clean (no text) photo for post `index` (1-4) of a story is stored."""
+    return VISUALS_CACHE_DIR / _story_key(item) / f"photo_{index}.jpg"
 
 
 def _render(prompt: str, seed: int, out_path: Path, llm: LLMClient,

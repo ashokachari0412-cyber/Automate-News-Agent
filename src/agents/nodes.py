@@ -12,7 +12,7 @@ from src.collectors.factory import get_collector
 from src.llm.client import LLMClient
 from src.models.news import NewsRankingResult, NewsScoreBreakdown, PrioritizedNewsItem
 from src.models.tweet import RawTweet, TweetCluster
-from src.agents.prompts import NEWS_EVALUATION_PROMPT, SYSTEM_RESEARCH_PROMPT
+from src.agents.prompts import NEWS_EVALUATION_PROMPT, NEWS_PICK_PROMPT, SYSTEM_RESEARCH_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,19 @@ class ResearchState(TypedDict, total=False):
     top_pick: Optional[PrioritizedNewsItem]
     result: Optional[NewsRankingResult]
     error: Optional[str]
+
+
+PICK_POOL = 60          # headlines Gemini chooses from (one short line each, so 60 is cheap)
+PICK_DESC_CHARS = 110   # description shown next to each headline when picking
+WRITE_DESC_CHARS = 500  # description sent for each PICKED story, so the summary has real facts
+
+
+def _headline(text: str):
+    """(headline, description) from a collected item: the first line is the headline, the rest its description."""
+    head, _, rest = text.strip().partition("\n")
+    if not rest and len(head) > 140:  # one long line (e.g. search results): headline = first sentence
+        head, _, rest = head.partition(". ")
+    return head.strip()[:160], " ".join(rest.split())
 
 
 def _origin(tweets) -> str:
@@ -152,6 +165,29 @@ class ResearchNodes:
         logger.info(f"Clustered into {len(clusters)} distinct news candidates.")
         return {"clusters": clusters}
 
+    async def _pick_from_headlines(self, clusters: List[Any]) -> List[Any]:
+        """Step 1: rank on headlines only. Falls back to the first stories if Gemini doesn't answer."""
+        pool = clusters[:PICK_POOL]
+        lines = []
+        for i, cluster in enumerate(pool, 1):
+            primary = cluster.tweets[0]
+            headline, desc = _headline(primary.text)
+            lines.append(f"c{i} | {primary.author_name} | {headline}" + (f" - {desc[:PICK_DESC_CHARS]}" if desc else ""))
+        try:
+            data = await self.llm_client.generate_json(
+                NEWS_PICK_PROMPT.format(lines="\n".join(lines), limit=settings.TOP_NEWS_LIMIT))
+            picks = []
+            for p in data.get("picks") or []:
+                k = str(p.get("id", "")).lstrip("c")
+                if k.isdigit() and 1 <= int(k) <= len(pool) and pool[int(k) - 1] not in picks:
+                    picks.append(pool[int(k) - 1])
+            if picks:
+                logger.info(f"Picked {len(picks)} of {len(pool)} stories from headlines only")
+                return picks[:settings.TOP_NEWS_LIMIT]
+        except Exception as e:
+            logger.warning(f"Headline pick failed, using the first stories instead: {e}")
+        return pool[:settings.TOP_NEWS_LIMIT]
+
     async def prioritize_and_rank_node(self, state: ResearchState) -> Dict[str, Any]:
         """Node 4: Uses Gemini / Groq to score, prioritize, and structure news items."""
         clusters = state.get("clusters", [])
@@ -159,23 +195,24 @@ class ResearchNodes:
         raw_tweets = state.get("raw_tweets", [])
         progress.report(f"Gemini is scoring {len(clusters)} stories and picking the most important ones...")
 
-        # Prepare summary of candidates for LLM prompt
+        # Step 1 (cheap): Gemini sees only "source | headline - short description" per story and picks the best.
+        picked = await self._pick_from_headlines(clusters)
+
+        # Step 2: only the picked stories, with their description, so the write-up has facts to work from.
         candidates_payload = []
-        for cluster in clusters:
+        for cluster in picked:
             primary = cluster.tweets[0]
+            headline, desc = _headline(primary.text)
             candidates_payload.append({
                 "cluster_id": cluster.cluster_id,
-                "author": f"@{primary.author_handle} ({primary.author_name})",
-                "category": primary.account_category,
-                "text": primary.text,
-                "likes": primary.likes,
-                "retweets": primary.retweets,
-                "urls": primary.urls,
-                "corroborating_tweets_count": len(cluster.tweets),
+                "source": primary.author_name,
+                "headline": headline,
+                "description": desc[:WRITE_DESC_CHARS],
+                "reports": len(cluster.tweets),
             })
 
         prompt_input = NEWS_EVALUATION_PROMPT.format(
-            tweets_json=json.dumps(candidates_payload[:30], indent=2)
+            tweets_json=json.dumps(candidates_payload, ensure_ascii=False, separators=(",", ":"))
         )
 
         llm_response = await self.llm_client.generate_json(
@@ -186,8 +223,9 @@ class ResearchNodes:
         raw_items = llm_response.get("items", [])
         ranked_items: List[PrioritizedNewsItem] = []
 
-        # Find cluster lookup map
+        # Find cluster lookup map (step 2 answers in the order of the picked list)
         cluster_map = {c.cluster_id: c for c in clusters}
+        clusters = picked
 
         for idx, item_data in enumerate(raw_items):
             try:

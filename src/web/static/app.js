@@ -385,6 +385,7 @@
     sendBtn.disabled = true;
     const thinkingId = appendThinkingBubble(thinkingLabel || "Alfred is on it...");
     const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    addStopButton(thinkingId, jobId);
     const stopProgress = watchProgress(jobId, thinkingId);
 
     try {
@@ -453,7 +454,8 @@
         body.querySelector(".thinking-state").remove();
         list = document.createElement("div");
         list.className = "progress-steps";
-        body.appendChild(list);
+        const stop = body.querySelector(".stop-btn");
+        stop ? body.insertBefore(list, stop) : body.appendChild(list);
       }
       const shown = steps.slice(-MAX_STEPS);
       list.innerHTML = shown.map((s, i) => {
@@ -509,19 +511,26 @@
 
       const grid = document.createElement("div");
       grid.className = "slide-grid";
+      const slideUrls = [...data.slides];
       data.slides.forEach((url, i) => {
+        const cell = document.createElement("div");
+        cell.className = "slide-cell";
         const link = document.createElement("a");
         link.href = url;
         link.addEventListener("click", (e) => {
           e.preventDefault();
-          openLightbox(data.slides, i);
+          openLightbox(slideUrls, i);
         });
         const img = document.createElement("img");
         img.src = url;
         img.alt = `Slide ${i + 1}`;
         img.addEventListener("load", scrollToBottom);
         link.appendChild(img);
-        grid.appendChild(link);
+        cell.appendChild(link);
+        addModifyControl(cell, img, link, data.format === "single"
+          ? { kind: "single", news_id: data.news_id, brand: data.brand }
+          : { kind: "slide", news_id: data.news_id, index: i + 1 }, (u) => { slideUrls[i] = u; });
+        grid.appendChild(cell);
       });
       block.appendChild(grid);
 
@@ -580,6 +589,7 @@
 
       const status = document.createElement("div");
       status.className = "publish-status";
+      const musicPicker = buildMusicPicker();
 
       const publishBtn = makeButton("Publish", true, async (btn) => {
         const selected = [...picker.querySelectorAll("input:checked")].map((c) => c.value);
@@ -594,7 +604,8 @@
           const res = await fetch(`/api/v1/carousel/publish/${data.news_id}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ platforms: selected, format: isSingle ? "single" : "carousel", brand }),
+            body: JSON.stringify({ platforms: selected, format: isSingle ? "single" : "carousel", brand,
+                                   ...musicPicker.selection() }),
           });
           const results = (await res.json()).results || {};
           status.innerHTML = selected.map((p) => {
@@ -617,8 +628,11 @@
 
       actions.appendChild(picker);
       actions.appendChild(publishBtn);
+      block.appendChild(musicPicker.el);
       block.appendChild(actions);
       block.appendChild(status);
+      const postReceipt = renderUsage(data.usage && { ...data.usage, kind: isSingle ? "image" : "post" });
+      if (postReceipt) block.appendChild(postReceipt);
       body.appendChild(block);
     }
 
@@ -627,15 +641,21 @@
       block.className = "carousel-block";
       const grid = document.createElement("div");
       grid.className = "slide-grid single";
+      const cell = document.createElement("div");
+      cell.className = "slide-cell";
+      let currentUrl = data.image_url;
       const link = document.createElement("a");
       link.href = data.image_url;
-      link.addEventListener("click", (e) => { e.preventDefault(); openLightbox([data.image_url], 0); });
+      link.addEventListener("click", (e) => { e.preventDefault(); openLightbox([currentUrl], 0); });
       const img = document.createElement("img");
       img.src = data.image_url;
       img.alt = "Generated image";
       img.addEventListener("load", scrollToBottom);
       link.appendChild(img);
-      grid.appendChild(link);
+      cell.appendChild(link);
+      addModifyControl(cell, img, link, { kind: "studio", file: data.image_url.split("/").pop().split("?")[0] },
+        (u) => { currentUrl = u; });
+      grid.appendChild(cell);
       block.appendChild(grid);
       const actions = document.createElement("div");
       actions.className = "msg-actions";
@@ -873,8 +893,15 @@
       el = document.createElement("div");
       el.className = "render-progress";
       el.innerHTML = `<div class="render-line"><span class="render-glyph">✻</span>
-        <span class="render-word"></span><span class="render-pct"></span></div>
+        <span class="render-word"></span><span class="render-pct"></span>
+        <button type="button" class="stop-btn small"><span class="stop-square"></span>Cancel</button></div>
         <div class="render-bar"><div class="render-fill"></div></div>`;
+      el.querySelector(".stop-btn").addEventListener("click", async (e) => {
+        const b = e.currentTarget;
+        b.disabled = true;
+        b.lastChild.textContent = "Cancelling…";
+        try { await fetch(`/api/v1/studio/jobs/${state.jobId}/cancel`, { method: "POST" }); } catch (err) { /* next poll shows it */ }
+      });
       box.querySelector(".video-job-status").replaceWith(el);
     }
     const pct = Math.max(0, Math.min(100, job.progress || 0));
@@ -896,9 +923,250 @@
     }
   }
 
+  // "Modify" under an image: his words + this image go to the image model; the new version replaces it
+  // in place (publishing then uses it). `payload` says which image (slide N, single, or studio file).
+  function addModifyControl(cell, img, link, payload, onUrl) {
+    const form = document.createElement("div");
+    form.className = "modify-form hidden";
+    form.innerHTML = `<textarea rows="2" placeholder="What should change? e.g. make the background dark blue, add the Claude logo"></textarea>
+      <div class="modify-actions"></div><div class="modify-status"></div>`;
+    const input = form.querySelector("textarea");
+    const status = form.querySelector(".modify-status");
+    const toggle = makeButton("✎ Modify", false, () => {
+      form.classList.toggle("hidden");
+      if (!form.classList.contains("hidden")) input.focus();
+    });
+    toggle.classList.add("modify-btn");
+    const apply = makeButton("Apply", true, async (btn) => {
+      const instruction = input.value.trim();
+      if (!instruction) { status.textContent = "Write what to change first."; return; }
+      btn.disabled = true;
+      btn.textContent = "Modifying…";
+      status.textContent = "The image model is making your change (about 20-40 s)…";
+      try {
+        const res = await (await fetch("/api/v1/images/modify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, instruction }),
+        })).json();
+        if (res.status === "success") {
+          img.src = res.url;
+          if (link) link.href = res.url;
+          if (onUrl) onUrl(res.url);
+          status.textContent = "Updated. Publishing will use this version.";
+          input.value = "";
+        } else {
+          status.textContent = res.message || res.detail || "Couldn't modify the image.";
+        }
+        const old = form.querySelector(".usage-card");
+        if (old) old.remove();
+        const receipt = renderUsage(res.usage && { ...res.usage, kind: "edit" });
+        if (receipt) form.appendChild(receipt);
+      } catch (e) {
+        status.textContent = `Modify failed: ${e.message}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Apply";
+      }
+    });
+    form.querySelector(".modify-actions").appendChild(apply);
+    cell.appendChild(toggle);
+    cell.appendChild(form);
+  }
+
+  // Background music for image posts: Instagram's library (attached inside Instagram as a Reel) and
+  // royalty-free tracks (YouTube, and Instagram when no Instagram track is chosen). One pick per tab.
+  const MUSIC_TABS = {
+    instagram: { label: "Instagram trending",
+      note: "Attached inside Instagram: the Instagram post becomes a Reel slideshow with this track. Not used on YouTube or LinkedIn." },
+    royalty_free: { label: "Royalty-free",
+      note: "Safe on every platform: used for the YouTube Short (and Instagram if no Instagram track is picked). A credit line is added to the caption." },
+  };
+  const fmtTime = (s) => `${Math.floor((s || 0) / 60)}:${String(Math.round((s || 0) % 60)).padStart(2, "0")}`;
+  let musicAudio = null;
+  function buildMusicPicker() {
+    const el = document.createElement("div");
+    el.className = "music-picker";
+    el.innerHTML = `<div class="msg-actions"><button type="button" class="msg-action-btn music-toggle">🎵 Background music</button>
+        <span class="music-chosen"></span></div>
+      <div class="music-panel hidden">
+        <div class="music-tabs">${Object.entries(MUSIC_TABS).map(([k, t]) =>
+          `<button type="button" data-src="${k}">${t.label}</button>`).join("")}</div>
+        <div class="music-note"></div>
+        <div class="music-list"></div>
+      </div>`;
+    const panel = el.querySelector(".music-panel");
+    const list = el.querySelector(".music-list");
+    const chosen = el.querySelector(".music-chosen");
+    const picks = { instagram: null, royalty_free: null };
+    const cache = {};
+    let tab = "instagram";
+    musicAudio = musicAudio || new Audio();
+    const stop = () => { musicAudio.pause(); el.querySelectorAll(".music-play.playing").forEach((b) => { b.classList.remove("playing"); b.textContent = "▶"; }); };
+    const showChosen = () => {
+      const parts = [];
+      if (picks.instagram) parts.push(`Instagram: ${picks.instagram.title}`);
+      if (picks.royalty_free) parts.push(`${picks.instagram ? "YouTube" : "All"}: ${picks.royalty_free.title}`);
+      chosen.textContent = parts.join(" · ");
+    };
+    const render = (items) => {
+      list.innerHTML = "";
+      if (!items.length) { list.textContent = "No tracks right now. Try again in a minute."; return; }
+      items.forEach((m) => {
+        const row = document.createElement("div");
+        row.className = "music-row" + (picks[tab] && picks[tab].id === m.id ? " selected" : "");
+        row.innerHTML = `<button type="button" class="music-play" aria-label="Preview">▶</button>
+          <div class="music-info"><div class="music-title">${escapeHtml(m.title)}</div>
+          <div class="music-meta">${escapeHtml(m.artist || "")} · ${fmtTime(m.duration)}${m.mood ? ` · ${escapeHtml(m.mood)}` : ""}</div></div>`;
+        row.querySelector(".music-play").addEventListener("click", (e) => {
+          e.stopPropagation();
+          const btn = e.currentTarget;
+          const wasPlaying = btn.classList.contains("playing");
+          stop();
+          if (wasPlaying) return;
+          musicAudio.src = m.preview_url;
+          musicAudio.play().catch(() => { btn.textContent = "✕"; });
+          btn.classList.add("playing");
+          btn.textContent = "❚❚";
+        });
+        row.addEventListener("click", () => {
+          picks[tab] = picks[tab] && picks[tab].id === m.id ? null : m;  // tap again to unselect
+          list.querySelectorAll(".music-row").forEach((r) => r.classList.remove("selected"));
+          if (picks[tab]) row.classList.add("selected");
+          showChosen();
+        });
+        list.appendChild(row);
+      });
+    };
+    const open = async (src) => {
+      tab = src;
+      stop();
+      el.querySelectorAll(".music-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.src === src));
+      el.querySelector(".music-note").textContent = MUSIC_TABS[src].note;
+      if (!cache[src]) {
+        list.textContent = src === "instagram" ? "Loading Instagram tracks… (the first load can take a minute)" : "Loading…";
+        try {
+          cache[src] = (await (await fetch(`/api/v1/music?source=${src}`)).json()).items || [];
+        } catch (e) { cache[src] = []; }
+      }
+      if (tab === src) render(cache[src]);
+    };
+    el.querySelectorAll(".music-tabs button").forEach((b) => b.addEventListener("click", () => open(b.dataset.src)));
+    el.querySelector(".music-toggle").addEventListener("click", () => {
+      panel.classList.toggle("hidden");
+      if (panel.classList.contains("hidden")) stop(); else open(tab);
+    });
+    return { el, selection: () => ({ ig_music_id: picks.instagram ? picks.instagram.id : null,
+                                      music_id: picks.royalty_free ? picks.royalty_free.id : null }) };
+  }
+
+  // Small avatar tiles shown before Render: his HeyGen looks, the current one selected first.
+  function buildAvatarPicker() {
+    const el = document.createElement("div");
+    el.className = "avatar-picker";
+    el.innerHTML = `<div class="avatar-picker-label">Loading your avatars…</div><div class="avatar-strip"></div>`;
+    const label = el.querySelector(".avatar-picker-label");
+    const strip = el.querySelector(".avatar-strip");
+    let selected = null;
+    fetch("/api/v1/studio/avatars").then((r) => r.json()).then(({ avatars = [] }) => {
+      if (!avatars.length) { el.remove(); return; }
+      const current = avatars.find((a) => a.current) || avatars[0];
+      selected = current.id;
+      label.textContent = `Avatar: ${current.name}`;
+      [current, ...avatars.filter((a) => a !== current)].forEach((a) => {
+        const tile = document.createElement("button");
+        tile.type = "button";
+        tile.className = "avatar-tile" + (a.id === selected ? " selected" : "");
+        tile.title = a.name;
+        tile.setAttribute("aria-label", a.name);
+        tile.innerHTML = a.thumb ? `<img src="${a.thumb}" alt="" loading="lazy">` : `<span>${escapeHtml(a.name[0] || "?")}</span>`;
+        tile.addEventListener("click", () => {
+          selected = a.id;
+          strip.querySelectorAll(".avatar-tile").forEach((t) => t.classList.toggle("selected", t === tile));
+          label.textContent = `Avatar: ${a.name}`;
+        });
+        strip.appendChild(tile);
+      });
+    }).catch(() => el.remove());
+    return { el, selected: () => selected };
+  }
+
+  // Under a finished video: editable caption + Instagram Reel / LinkedIn / YouTube Short + Publish.
+  const VIDEO_PLATFORMS = [["instagram", "Instagram Reel"], ["linkedin", "LinkedIn"], ["youtube", "YouTube Short"]];
+  function buildVideoPublish(jobId, job) {
+    const wrap = document.createElement("div");
+    wrap.className = "video-publish";
+    const caption = document.createElement("textarea");
+    caption.className = "caption-box caption-edit";
+    caption.value = job.caption || "";
+    caption.rows = Math.min(8, (job.caption || "").split("\n").length + 1);
+    caption.placeholder = "Caption for the post";
+    wrap.appendChild(caption);
+
+    const picker = document.createElement("div");
+    picker.className = "platform-picker";
+    VIDEO_PLATFORMS.forEach(([value, name]) => {
+      const label = document.createElement("label");
+      label.className = "platform-option";
+      label.innerHTML = `<input type="checkbox" value="${value}"> <span>${name}</span>`;
+      picker.appendChild(label);
+    });
+    const status = document.createElement("div");
+    status.className = "publish-status";
+    const showLinks = (published) => Object.entries(published || {}).map(([p, r]) => {
+      const name = (VIDEO_PLATFORMS.find(([v]) => v === p) || [p, p])[1];
+      return r.url ? `${escapeHtml(name)}: posted (<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">view</a>)`
+        : `${escapeHtml(name)}: posted`;
+    });
+    status.innerHTML = showLinks(job.published).join("<br>");
+
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    actions.appendChild(picker);
+    actions.appendChild(makeButton("Publish", true, async (btn) => {
+      const selected = [...picker.querySelectorAll("input:checked")].map((c) => c.value);
+      if (!selected.length) {
+        status.textContent = "Select where to post it.";
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Publishing…";
+      status.textContent = "Uploading the video. LinkedIn and YouTube can take a minute.";
+      try {
+        const res = await fetch(`/api/v1/studio/jobs/${jobId}/publish`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platforms: selected, caption: caption.value }),
+        });
+        const results = (await res.json()).results || {};
+        status.innerHTML = selected.map((p) => {
+          const name = VIDEO_PLATFORMS.find(([v]) => v === p)[1];
+          const r = results[p] || {};
+          if (r.status === "success") {
+            return r.url ? `${escapeHtml(name)}: posted (<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">view</a>)`
+              : `${escapeHtml(name)}: posted`;
+          }
+          return `${escapeHtml(name)}: ${escapeHtml(r.message || r.status || "error")}`;
+        }).join("<br>");
+      } catch (e) {
+        status.textContent = `Publish failed: ${e.message}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Publish";
+      }
+    }));
+    actions.appendChild(makeButton("Copy caption", false, async (btn) => {
+      await navigator.clipboard.writeText(caption.value);
+      btn.textContent = "Copied";
+    }));
+    wrap.appendChild(actions);
+    wrap.appendChild(status);
+    return wrap;
+  }
+
   // Polls a HeyGen render job until the 9:16 video is ready, then shows the player.
   function watchVideoJob(jobId, box) {
-    const state = { stage: null, i: 0, timer: null };
+    const state = { stage: null, i: 0, timer: null, jobId };
     const stopWords = () => { if (state.timer) clearInterval(state.timer); state.timer = null; };
     // The plain status line (used for "ready to render" and errors); brings it back if the progress bar replaced it.
     const statusMsg = () => {
@@ -917,6 +1185,7 @@
           stopWords();
           box.innerHTML = `<video class="video-job-player" controls playsinline preload="metadata" src="${job.url}"></video>
             <div class="msg-actions"><a class="msg-action-btn" href="${job.url}" download="alfred-video.mp4">Download video</a></div>`;
+          box.appendChild(buildVideoPublish(jobId, job));
           const receipt = renderUsage(job.usage && { ...job.usage, kind: "video" });
           if (receipt) box.appendChild(receipt);
           scrollToBottom();
@@ -926,7 +1195,8 @@
           stopWords();
           box.classList.add("failed");
           statusMsg().textContent = job.message || job.detail || "The video failed.";
-          const spent = job.usage && job.usage.total_usd > 0 && renderUsage({ ...job.usage, kind: "failed render (already charged)" });
+          const spent = job.usage && job.usage.total_usd > 0 && renderUsage({ ...job.usage,
+            kind: job.status === "cancelled" ? "cancelled render (already charged)" : "failed render (already charged)" });
           if (spent) box.appendChild(spent);
           return;
         }
@@ -935,18 +1205,26 @@
           const est = job.estimate || {};
           statusMsg().textContent = `Ready to render · about $${est.total_usd ?? "?"} (HeyGen $${est.heygen_usd ?? "?"} + top half $${est.content_usd ?? "?"})`;
           if (!box.querySelector(".video-job-actions")) {
+            const avatars = buildAvatarPicker();
+            box.appendChild(avatars.el);
             const row = document.createElement("div");
             row.className = "msg-actions video-job-actions";
             const go = makeButton("Render video", true, async (btn) => {
               btn.disabled = true;
               btn.textContent = "Starting...";
-              await fetch(`/api/v1/studio/jobs/${jobId}/approve`, { method: "POST" });
+              await fetch(`/api/v1/studio/jobs/${jobId}/approve`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ avatar_id: avatars.selected() }),
+              });
               row.remove();
+              avatars.el.remove();
               tick();
             });
             const cancel = makeButton("Cancel", false, async () => {
               await fetch(`/api/v1/studio/jobs/${jobId}/cancel`, { method: "POST" });
               row.remove();
+              avatars.el.remove();
               tick();
             });
             row.appendChild(go);
@@ -1037,6 +1315,24 @@
     btn.textContent = label;
     btn.addEventListener("click", () => onClick(btn));
     return btn;
+  }
+
+  // Stop button on the "working..." bubble: the server ends the request and replies "Stopped".
+  function addStopButton(bubbleId, jobId) {
+    const body = document.querySelector(`#${bubbleId} .bubble-body`);
+    if (!body) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "stop-btn";
+    btn.innerHTML = `<span class="stop-square"></span>Stop`;
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.lastChild.textContent = "Stopping…";
+      try {
+        await fetch(`/api/v1/progress/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+      } catch (e) { /* the chat request itself will report */ }
+    });
+    body.appendChild(btn);
   }
 
   function appendThinkingBubble(label = "Alfred is formulating response...") {

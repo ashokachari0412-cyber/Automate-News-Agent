@@ -1696,3 +1696,86 @@ a.msg-action-btn {
 .render-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent-terracotta); transition: width 0.8s ease; }
 @keyframes render-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .render-glyph { animation: none; } .render-fill { transition: none; } }
+
+/* Avatar picker before Render: small tiles in one scrollable row */
+.avatar-picker { margin-top: 10px; }
+.avatar-picker-label { font-size: 0.82em; color: var(--text-secondary); margin-bottom: 6px; }
+.avatar-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin; }
+.avatar-tile {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background: var(--bg-input-box);
+  overflow: hidden;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.avatar-tile img { width: 100%; height: 100%; object-fit: cover; object-position: center 20%; display: block; }
+.avatar-tile.selected { border-color: var(--accent-terracotta); box-shadow: 0 0 0 2px var(--accent-glow); }
+.avatar-tile:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+
+/* Posting options under a finished video */
+.video-publish { margin-top: 10px; }
+
+/* Stop / Cancel for work in progress */
+.stop-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-hover);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.82em;
+  cursor: pointer;
+}
+.stop-btn:hover { color: var(--text-primary); border-color: var(--accent-terracotta); }
+.stop-btn:disabled { opacity: 0.6; cursor: default; }
+.stop-btn.small { margin-top: 0; padding: 3px 10px; }
+.stop-square { width: 8px; height: 8px; border-radius: 2px; background: var(--accent-terracotta); }
+
+/* Background music picker for image posts */
+.music-picker { margin-top: 10px; }
+.music-chosen { font-size: 0.82em; color: var(--status-green); align-self: center; }
+.music-panel { margin-top: 8px; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-app); padding: 10px; }
+.music-panel.hidden { display: none; }
+.music-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.music-tabs button {
+  flex: 1; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border-light);
+  background: transparent; color: var(--text-secondary); font: inherit; font-size: 0.85em; cursor: pointer;
+}
+.music-tabs button.active { border-color: var(--accent-terracotta); color: var(--text-primary); background: var(--bg-card); }
+.music-note { font-size: 0.78em; color: var(--text-muted); margin-bottom: 8px; }
+.music-list { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 0.88em; color: var(--text-secondary); }
+.music-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+.music-row:hover { background: var(--bg-card); }
+.music-row.selected { border-color: var(--accent-terracotta); background: var(--bg-card); }
+.music-play {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border-hover);
+  background: transparent; color: var(--text-primary); font-size: 0.75em; cursor: pointer;
+}
+.music-play.playing { border-color: var(--accent-terracotta); color: var(--accent-terracotta); }
+.music-info { min-width: 0; }
+.music-title { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.music-meta { font-size: 0.82em; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Modify under each image */
+.slide-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.modify-btn { align-self: flex-start; padding: 5px 12px; font-size: 0.82em; }
+.modify-form { display: flex; flex-direction: column; gap: 6px; }
+.modify-form.hidden { display: none; }
+.modify-form textarea {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 54px; padding: 8px 10px;
+  border-radius: 8px; border: 1px solid var(--border-light); background: var(--bg-input-box);
+  color: var(--text-primary); font: inherit; font-size: 0.88em;
+}
+.modify-form textarea:focus { outline: none; border-color: var(--border-focus); }
+.modify-actions { display: flex; gap: 6px; }
+.modify-status { font-size: 0.8em; color: var(--text-secondary); }
+.modify-form .usage-card { margin-top: 2px; }

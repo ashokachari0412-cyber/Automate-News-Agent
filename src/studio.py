@@ -377,6 +377,79 @@ async def make_image(request: str, aspect: Optional[str] = None, exact_prompt: b
             "usage": await costs.summary(ledger)}
 
 
+# ----------------------------------------------------------------------------- avatar picker
+AVATARS_FILE = STUDIO_DIR / "avatars.json"
+AVATAR_THUMB = 160  # px: the app shows small tiles
+
+
+async def list_avatars(refresh: bool = False) -> List[Dict[str, Any]]:
+    """His HeyGen looks for the picker: id, name, default voice and a small local thumbnail (HeyGen's preview
+    links expire, so each preview is saved once as avatar_<id>.jpg). Cached for 12 h."""
+    from PIL import Image
+    import io
+    items: List[Dict[str, Any]] = []
+    try:
+        cached = json.loads(AVATARS_FILE.read_text(encoding="utf-8"))
+        if not refresh and time.time() - cached.get("time", 0) < 12 * 3600:
+            items = cached["items"]
+    except Exception:
+        pass
+    if not items:
+        engine = heygen_env()["engine"]
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            looks = await _list_all(client, "/v3/avatars/looks", {"ownership": "private"})
+            for lk in looks:
+                engines = [str(e).lower() for e in (lk.get("supported_api_engines") or [])]
+                if lk.get("status") not in (None, "completed", "ready", "active") or (engines and engine not in engines):
+                    continue
+                thumb = STUDIO_DIR / f"avatar_{lk['id']}.jpg"
+                if not thumb.exists() and lk.get("preview_image_url"):
+                    try:
+                        img = Image.open(io.BytesIO((await client.get(lk["preview_image_url"])).content)).convert("RGB")
+                        img.thumbnail((AVATAR_THUMB * 2, AVATAR_THUMB * 2))
+                        STUDIO_DIR.mkdir(parents=True, exist_ok=True)
+                        img.save(thumb, quality=85)
+                    except Exception as e:
+                        logger.warning(f"Avatar thumbnail failed for {lk['id']}: {e}")
+                items.append({"id": lk["id"], "name": lk.get("name") or "Avatar", "type": lk.get("avatar_type"),
+                              "voice_id": lk.get("default_voice_id"),
+                              "thumb": f"/api/v1/studio/files/{thumb.name}" if thumb.exists() else None})
+        AVATARS_FILE.write_text(json.dumps({"time": time.time(), "items": items}, indent=1), encoding="utf-8")
+    current = heygen_env()["avatar_id"]
+    return [{**a, "current": a["id"] == current} for a in items]
+
+
+# ----------------------------------------------------------------------------- captions
+CAPTION_PROMPT = """Write the post caption for this short vertical video by Master Ashok (@ashok_a.i), for Instagram,
+LinkedIn and YouTube Shorts.
+Title: {title}
+What he says: \"\"\"{script}\"\"\"
+Rules: 2-3 short lines in plain English (a hook, then the key point), then 5-8 relevant hashtags on the last line.
+At most 2 emojis, no "follow for more", no facts beyond what he says.
+Return ONLY JSON: {{"caption": "<the caption>"}}"""
+
+
+async def make_caption(plan: Dict[str, Any]) -> str:
+    script = " ".join(s["spoken"] for s in plan["scenes"])
+    try:
+        data = await _llm.generate_json(CAPTION_PROMPT.format(title=plan.get("title", ""), script=script))
+        caption = str(data.get("caption") or "").strip()
+        if caption:
+            return caption
+    except Exception as e:
+        logger.warning(f"Caption generation failed: {e}")
+    return f"{plan.get('title', '')}\n\n{script}\n\n#AI #AINews #Tech"
+
+
+def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return _load_jobs().get(job_id)
+
+
+def update_job(job: Dict[str, Any], **fields: Any) -> None:
+    job.update(fields)
+    _save_job(job)
+
+
 # ----------------------------------------------------------------------------- progress
 # Overall % = top half (images + clips) 33% + HeyGen take 50% + polish/stitch 15%, plus 2% for starting.
 # The app shows the % and a playful word for the current stage (imagining, animating, recording, ...).
@@ -474,14 +547,22 @@ async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
     return sources
 
 
+_build_tasks: Dict[str, "asyncio.Task"] = {}
+
+
 async def _build(job_id: str) -> None:
     from src.video import split_video
     job = _load_jobs()[job_id]
     ledger = costs.start()
+    avatar_task = None
     try:
         hg = await resolve_heygen()  # fail fast (bad key / no avatar) before spending anything
         if job.get("engine"):  # one-off engine for this job (e.g. an Avatar IV test); .env stays as it is
             hg = {**hg, "engine": job["engine"]}
+        if job.get("avatar_id") and job["avatar_id"] != hg["avatar_id"]:  # picked in the app for this video
+            look = next((a for a in await list_avatars() if a["id"] == job["avatar_id"]), {})
+            hg = {**hg, "avatar_id": job["avatar_id"],
+                  "voice_id": heygen_env()["voice_id"] or look.get("voice_id") or hg["voice_id"]}
         plan = job["plan"]
         plan["scenes"] = _drop_cta(plan["scenes"]) or plan["scenes"]
         script = " ".join(s["spoken"] for s in plan["scenes"])
@@ -520,13 +601,22 @@ async def _build(job_id: str) -> None:
         _progress(job, "finishing", post=0.6)
         await asyncio.to_thread(split_video.compose, clips, durations, avatar, STUDIO_DIR / name,
                                 STUDIO_DIR / f"{job_id}_work", script)
+        job["caption"] = await make_caption(plan)  # editable in the app before posting
         job.update(status="done", message="Your video is ready.", file=name, url=f"/api/v1/studio/files/{name}",
                    duration=round(total, 1), usage=await costs.summary(ledger), progress=100, stage="done")
+        _save_job(job)
+    except asyncio.CancelledError:  # he pressed Cancel during the render
+        if avatar_task and not avatar_task.done():
+            avatar_task.cancel()
+        job.update(status="cancelled", message="Render cancelled. Nothing more will be created; "
+                   "anything already started was charged (see below).", usage=await costs.summary(ledger))
         _save_job(job)
     except Exception as e:
         logger.error(f"Studio job {job_id} failed: {e}")
         job.update(status="failed", message=str(e)[:300], usage=await costs.summary(ledger))  # what was spent anyway
         _save_job(job)
+    finally:
+        _build_tasks.pop(job_id, None)
 
 
 async def start_video_job(plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -540,14 +630,16 @@ async def start_video_job(plan: Dict[str, Any]) -> Dict[str, Any]:
     return job
 
 
-async def approve_job(job_id: str) -> Optional[Dict[str, Any]]:
+async def approve_job(job_id: str, avatar_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     job = _load_jobs().get(job_id)
     if not job:
         return None
     if job["status"] == "awaiting_approval":
+        if avatar_id:
+            job["avatar_id"] = avatar_id
         job.update(status="queued", message="Starting...", approved=time.time(), progress=0, stage="starting")
         _save_job(job)
-        asyncio.create_task(_build(job_id))
+        _build_tasks[job_id] = asyncio.create_task(_build(job_id))
     return {k: v for k, v in job.items() if k != "plan" and not k.startswith("_")}
 
 
@@ -556,6 +648,10 @@ async def cancel_job(job_id: str) -> Optional[Dict[str, Any]]:
     if job and job["status"] == "awaiting_approval":
         job.update(status="cancelled", message="Cancelled. Nothing was rendered or charged.")
         _save_job(job)
+    elif job and job["status"] in ("queued", "rendering") and job_id in _build_tasks:
+        _build_tasks[job_id].cancel()  # _build marks it cancelled and saves what was spent
+        await asyncio.sleep(0.3)
+        job = _load_jobs().get(job_id, job)
     return {k: v for k, v in job.items() if k != "plan" and not k.startswith("_")} if job else None
 
 

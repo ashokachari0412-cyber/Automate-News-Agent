@@ -41,8 +41,8 @@ def save_news(items: Dict[str, PrioritizedNewsItem]) -> None:
     NEWS_CACHE_FILE.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
 
-SEEN_DAYS = 3        # a story shown to the user in the last 3 days is not shown again
-KEEP_DAYS = 7        # older stories are dropped from the cache
+SEEN_DAYS = 14       # a story shown to the user in the last 14 days is not shown again
+KEEP_DAYS = 14       # older stories are dropped from the cache (>= SEEN_DAYS, or shown ones are forgotten)
 SIMILAR_TITLE = 0.72  # headline similarity that counts as the same story
 
 
@@ -94,6 +94,18 @@ def apply_scan(cache: Dict[str, PrioritizedNewsItem], items: List[PrioritizedNew
         cache[it.id] = it
     logger.info(f"Scan: {len(items)} stories -> {len(fresh)} new (duplicates / recently shown removed)")
     return fresh
+
+
+def refresh_latest(cache: Dict[str, PrioritizedNewsItem], items: List[PrioritizedNewsItem]) -> int:
+    """No NEW stories in this scan: make the stories it found (already shown before) the current digest again,
+    so he still gets today's latest news instead of an empty answer. Returns how many were re-dated."""
+    now = datetime.now(timezone.utc)
+    count = 0
+    for key, cached in list(cache.items()):
+        if any(_same_story(cached, it) for it in items):
+            cache[key] = cached.model_copy(update={"scanned_at": now})
+            count += 1
+    return count
 
 
 def mark_shown(cache: Dict[str, PrioritizedNewsItem], items: List[PrioritizedNewsItem]) -> None:

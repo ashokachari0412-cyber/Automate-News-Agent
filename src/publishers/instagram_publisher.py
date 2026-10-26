@@ -126,6 +126,50 @@ class InstagramPublisher:
 
         return await loop.run_in_executor(self._executor, _sync_upload)
 
+    def search_tracks(self, queries: List[str], per_query: int = 3):
+        """(query, track dict) pairs from Instagram's music library (runs on the caller's thread)."""
+        cl = self._get_client()
+        for q in queries:
+            try:
+                for t in cl.search_music(q)[:per_query]:
+                    yield q, {k: v for k, v in t.model_dump(mode="json").items() if k != "dash_manifest"}
+            except Exception as e:
+                logger.warning(f"Instagram music search '{q}' failed: {e}")
+
+    async def upload_slideshow_with_music(self, image_paths: List[Path], caption: str, track: dict) -> str:
+        """Post images as a Reel slideshow with an Instagram library track attached (shows the track label).
+        Same as instagrapi's clip_upload_as_reel_with_music, but mixed with FFmpeg instead of moviepy."""
+        from instagrapi.types import Track
+        from src import music
+        loop = asyncio.get_running_loop()
+
+        def _sync_upload():
+            import subprocess
+            import imageio_ffmpeg
+            cl = self._get_client()
+            t = Track(**track)
+            work = image_paths[0].parent
+            audio = cl.track_download_by_url(t.uri, f"track_{t.id}", work)
+            start = (t.highlight_start_times_in_ms or [0])[0] / 1000
+            video = music.slideshow(image_paths, work / "reel_music.mp4", audio=Path(audio), audio_start=start)
+            from src.video.split_video import media_duration
+            dur = media_duration(video)
+            thumb = video.with_suffix(".cover.jpg")
+            subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-ss", "1", "-i",
+                            str(video), "-frames:v", "1", "-q:v", "2", str(thumb)], check=True)
+            data = cl.clip_music_extra_data(t, audio_asset_start_time=int(start * 1000),
+                                            overlap_duration=int(dur * 1000), original_volume=0.0)
+            logger.info(f"📤 Uploading slideshow reel with '{t.title}'...")
+            media = cl.clip_upload(video, caption, thumbnail=thumb, extra_data=data)
+            code = getattr(media, "code", "")
+            try:
+                cl.dump_settings(self.session_file)
+            except Exception:
+                pass
+            return f"https://www.instagram.com/reel/{code}/" if code else f"https://www.instagram.com/{self.username}/reels/"
+
+        return await loop.run_in_executor(self._executor, _sync_upload)
+
     async def upload_reel(self, video_path: Path, caption: str) -> str:
         """Upload a video Reel to Instagram."""
         if not self.is_configured():
@@ -137,9 +181,15 @@ class InstagramPublisher:
         loop = asyncio.get_running_loop()
 
         def _sync_upload():
+            import subprocess
+            import imageio_ffmpeg
             cl = self._get_client()
+            # Cover frame made with FFmpeg, so instagrapi doesn't need moviepy to make one
+            thumb = video_path.with_suffix(".cover.jpg")
+            subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-ss", "1", "-i",
+                            str(video_path), "-frames:v", "1", "-q:v", "2", str(thumb)], check=True)
             logger.info(f"📤 Uploading reel: {video_path.name}...")
-            media = cl.clip_upload(path=video_path, caption=caption)
+            media = cl.clip_upload(path=video_path, caption=caption, thumbnail=thumb)
             code = getattr(media, "code", "")
             url = f"https://www.instagram.com/p/{code}/" if code else f"https://www.instagram.com/{self.username}/reels/"
             logger.info(f"✅ Reel posted! URL: {url}")

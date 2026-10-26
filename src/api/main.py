@@ -29,7 +29,7 @@ from src.models.script import VideoBlueprint
 from src.publishers.instagram_publisher import InstagramPublisher
 from src.publishers.linkedin_publisher import LinkedInPublisher
 from src.publishers.youtube_publisher import YouTubePublisher
-from src import progress, storage
+from src import costs, music, progress, storage
 from src.google_workspace import auth as google_auth
 from src.google_workspace.agent import is_workspace_query, run_workspace_agent
 from src.google_workspace.router import router as google_router
@@ -94,6 +94,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+NO_CACHE = {"Cache-Control": "no-cache"}  # images can be modified in place: always revalidate
 
 _publishers = {
     "instagram": InstagramPublisher(),
@@ -184,8 +186,28 @@ class CaptionRequest(BaseModel):
     caption: str
 
 
+class ModifyImageRequest(BaseModel):
+    instruction: str
+    kind: str  # "slide" (carousel post N) | "single" (one-image post) | "studio" (Create-image result)
+    news_id: Optional[str] = None
+    index: Optional[int] = None  # slide number 1-4
+    brand: Optional[str] = None
+    file: Optional[str] = None  # studio image file name
+
+
+class ApproveVideoRequest(BaseModel):
+    avatar_id: Optional[str] = None  # the HeyGen look he picked; None = the one in .env
+
+
+class PublishVideoRequest(BaseModel):
+    platforms: List[str] = Field(default_factory=list)
+    caption: Optional[str] = None
+
+
 class PublishCarouselRequest(BaseModel):
     platforms: List[str] = Field(default_factory=lambda: ["instagram"])
+    ig_music_id: Optional[str] = None  # Instagram library track: the Instagram post becomes a Reel slideshow
+    music_id: Optional[str] = None  # royalty-free track: YouTube (and Instagram if no ig_music_id), credit added
     format: str = "carousel"  # "carousel" (4 Instagram images) or "single" (1 image)
     brand: str = "instagram"  # single image only: "instagram" (@ashok_a.i branded) or "linkedin" (content only)
 
@@ -273,7 +295,7 @@ async def get_single_image(news_id: str, brand: str = "instagram"):
     single_file = CAROUSELS_DIR / news_id / f"single_{brand}.png"
     if not single_file.exists():
         raise HTTPException(status_code=404, detail="Single image not found")
-    return FileResponse(single_file, media_type="image/png")
+    return FileResponse(single_file, media_type="image/png", headers=NO_CACHE)
 
 
 @app.get("/api/v1/carousel/{news_id}/slide/{slide_num}")
@@ -288,7 +310,7 @@ async def get_carousel_slide(news_id: str, slide_num: int):
             _carousel_generator.generate_carousel(item)
     if not slide_file.exists():
         raise HTTPException(status_code=404, detail="Slide image not found")
-    return FileResponse(slide_file, media_type="image/png")
+    return FileResponse(slide_file, media_type="image/png", headers=NO_CACHE)
 
 
 @app.post("/api/v1/carousel/{news_id}/caption")
@@ -315,13 +337,67 @@ async def heygen_status(refresh: bool = False):
         return {"ready": False, "reason": str(e)}
 
 
+@app.get("/api/v1/music")
+async def music_library(source: str = "royalty_free", refresh: bool = False):
+    """Background music for image posts. source=royalty_free (all platforms) | instagram (Instagram only)."""
+    try:
+        if source == "instagram":
+            items = await asyncio.get_running_loop().run_in_executor(
+                _publishers["instagram"]._executor, music.instagram_tracks, _publishers["instagram"], refresh)
+        else:
+            items = await asyncio.to_thread(music.royalty_free, refresh)
+        return {"source": source, "items": [{k: v for k, v in i.items() if k != "track"} for i in items]}
+    except Exception as e:
+        logger.warning(f"Music library {source} failed: {e}")
+        return {"source": source, "items": [], "reason": str(e)[:200]}
+
+
+@app.get("/api/v1/studio/avatars")
+async def studio_avatars(refresh: bool = False):
+    """His HeyGen looks as small thumbnails for the picker shown before rendering."""
+    try:
+        return {"avatars": await studio.list_avatars(refresh)}
+    except Exception as e:
+        return {"avatars": [], "reason": str(e)}
+
+
 @app.post("/api/v1/studio/jobs/{job_id}/approve")
-async def studio_job_approve(job_id: str):
+async def studio_job_approve(job_id: str, payload: Optional[ApproveVideoRequest] = None):
     """He tapped Render: only now does anything paid (HeyGen, Omni Flash) run."""
-    job = await studio.approve_job(job_id)
+    job = await studio.approve_job(job_id, payload.avatar_id if payload else None)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.post("/api/v1/studio/jobs/{job_id}/publish")
+async def studio_job_publish(job_id: str, payload: PublishVideoRequest):
+    """Posts a finished studio video: Instagram Reel, LinkedIn video post, YouTube Short."""
+    job = studio.get_job(job_id)
+    if not job or job.get("status") != "done" or not job.get("file"):
+        raise HTTPException(status_code=404, detail="Finished video not found")
+    video = studio.STUDIO_DIR / job["file"]
+    caption = (payload.caption or job.get("caption") or "").strip() or await studio.make_caption(job["plan"])
+    title = job["plan"].get("title") or "Alfred video"
+    results: Dict[str, Any] = {}
+    for plat in payload.platforms:
+        publisher = _publishers.get(plat)
+        if not publisher:
+            results[plat] = {"status": "error", "message": f"Unsupported platform: {plat}"}
+        elif not publisher.is_configured():
+            results[plat] = {"status": "not_configured", "message": PUBLISHER_SETUP_HINTS[plat]}
+        else:
+            try:
+                url = (await publisher.upload_reel(video, caption) if plat == "instagram"
+                       else await publisher.upload_video(video, caption, title))
+                results[plat] = {"status": "success", "url": url}
+            except Exception as e:
+                logger.error(f"{plat} video upload error: {e}")
+                results[plat] = {"status": "error", "message": str(e)[:300]}
+    published = {**(job.get("published") or {}),
+                 **{p: r for p, r in results.items() if r.get("status") == "success"}}
+    studio.update_job(job, caption=caption, published=published)
+    return {"results": results, "caption": caption}
 
 
 @app.post("/api/v1/studio/jobs/{job_id}/cancel")
@@ -345,7 +421,58 @@ async def studio_file(name: str):
     path = studio.studio_file(name)
     if not path:
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path)
+    return FileResponse(path, headers=NO_CACHE if path.suffix != ".mp4" else None)
+
+
+@app.post("/api/v1/images/modify")
+async def modify_image(req: ModifyImageRequest):
+    """Modify one image: his instruction + the current photo go to the image model (Seedream edit), then the
+    post is rebuilt around the new photo. Publishing afterwards uses the modified image."""
+    from src.video import slide_visuals
+    instruction = (req.instruction or "").strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="Write what to change first.")
+    ledger = costs.start()
+    v = int(time.time())
+    try:
+        if req.kind == "studio":
+            path = studio.studio_file(req.file or "")
+            if not path or path.suffix.lower() not in (".png", ".jpg"):
+                raise HTTPException(status_code=404, detail="Image not found")
+            await asyncio.to_thread(slide_visuals.edit_image, path, instruction, path)
+            url = f"/api/v1/studio/files/{path.name}?v={v}"
+        else:
+            _load_news_cache()
+            item = _cached_news.get(req.news_id or "")
+            if not item:
+                raise HTTPException(status_code=404, detail="News story not found")
+            if req.kind == "single":
+                brand = "linkedin" if req.brand == "linkedin" else "instagram"
+                photo = slide_visuals.story_photo(item, 1)
+                src = photo if photo.exists() else CAROUSELS_DIR / item.id / f"single_{brand}.png"
+                await asyncio.to_thread(slide_visuals.edit_image, src, instruction, photo, None, "4:5")
+                await _carousel_generator.generate_single_async(item, brand)
+                url = f"/api/v1/carousel/{item.id}/single?brand={brand}&v={v}"
+            else:
+                index = int(req.index or 1)
+                if not 1 <= index <= 4:
+                    raise HTTPException(status_code=400, detail="Slide number must be 1-4")
+                assets_file = CAROUSELS_DIR / item.id / "assets.json"
+                assets = json.loads(assets_file.read_text(encoding="utf-8")) if assets_file.exists() else None
+                photo = slide_visuals.story_photo(item, index)
+                src = photo if photo.exists() else CAROUSELS_DIR / item.id / f"slide_{index:02d}.png"
+                await asyncio.to_thread(slide_visuals.edit_image, src, instruction, photo, None, "4:5")
+                if assets:  # point the post at the edited photo, then rebuild the slides
+                    assets["photos"][index - 1] = str(photo)
+                    assets_file.write_text(json.dumps(assets, ensure_ascii=False), encoding="utf-8")
+                await asyncio.to_thread(_carousel_generator.generate_carousel, item)
+                url = f"/api/v1/carousel/{item.id}/slide/{index}?v={v}"
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Modify image failed: {e}")
+        return {"status": "error", "message": str(e)[:300], "usage": await costs.summary(ledger)}
+    return {"status": "success", "url": url, "usage": await costs.summary(ledger)}
 
 
 @app.get("/api/v1/define")
@@ -396,9 +523,19 @@ async def publish_carousel(news_id: str, payload: PublishCarouselRequest):
             results[plat] = {"status": "not_configured", "message": PUBLISHER_SETUP_HINTS[plat]}
         else:
             try:
+                ig_track = music.find(payload.ig_music_id)
+                rf_track = music.find(payload.music_id)
+                rf_audio = await asyncio.to_thread(music.audio_file, rf_track) if rf_track else None
                 if plat == "youtube":
-                    url = await publisher.upload_carousel(slide_paths, caption, item.title)
-                else:
+                    url = await publisher.upload_carousel(slide_paths, music.with_credit(caption, rf_track),
+                                                          item.title, rf_audio)
+                elif plat == "instagram" and ig_track:
+                    url = await publisher.upload_slideshow_with_music(slide_paths, caption, ig_track["track"])
+                elif plat == "instagram" and rf_audio:
+                    reel = await asyncio.to_thread(music.slideshow, slide_paths,
+                                                   slide_paths[0].parent / "reel_rf.mp4", rf_audio)
+                    url = await publisher.upload_reel(reel, music.with_credit(caption, rf_track))
+                else:  # LinkedIn image posts can't carry music
                     url = await publisher.upload_carousel(slide_paths, caption)
                 results[plat] = {"status": "success", "url": url}
             except Exception as e:
@@ -489,6 +626,19 @@ async def get_progress(job_id: str):
     return {"message": progress.get(job_id)}
 
 
+_chat_tasks: Dict[str, asyncio.Task] = {}
+
+
+@app.post("/api/v1/progress/{job_id}/cancel")
+async def cancel_progress(job_id: str):
+    """Stop button: ends the running chat request now; worker threads stop at their next step."""
+    progress.cancel(job_id)
+    task = _chat_tasks.get(job_id)
+    if task and not task.done():
+        task.cancel()
+    return {"status": "cancelling"}
+
+
 @app.get("/api/v1/alfred/memory")
 async def get_alfred_memory():
     """Returns the persisted conversation so the UI can restore it on reload."""
@@ -529,10 +679,18 @@ async def run_alfred_chat(req: AlfredChatRequest, remember_as: Optional[str] = N
     history = [{"role": m["role"], "content": m["content"]} for m in memory.get("messages", [])]
 
     progress.start(req.job_id)
+    if req.job_id:
+        _chat_tasks[req.job_id] = asyncio.current_task()
     try:
         response = await _handle_chat(req, history, memory.get("last_news_id"))
+    except (asyncio.CancelledError, progress.Cancelled):
+        if req.job_id not in progress._cancelled:
+            raise  # a real shutdown, not his Stop button
+        asyncio.current_task().uncancel()
+        response = {"reply": "Stopped, Master Ashok. Nothing more will run for that request.", "author": "Alfred"}
     finally:
         progress.finish(req.job_id)
+        _chat_tasks.pop(req.job_id, None)
 
     memory.setdefault("messages", []).append({"role": "user", "content": remember_as or req.message})
     memory["messages"].append({"role": "assistant", "content": response["reply"],
@@ -699,6 +857,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
 
     # 1. Intent: Scan News / Today News / Breaking News
     if intent == "news":
+        stale_note = ""
         try:
             if not _cached_news or route.get("fresh_scan", True):
                 progress.report("Starting a fresh scan of AI news from the last 24 hours...")
@@ -706,14 +865,16 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
                 fresh = storage.apply_scan(_cached_news, workflow_res.items)
                 _save_news_cache()
                 if not fresh:
-                    return {
-                        "reply": ("No fresh AI news since your last update, Master Ashok. Everything the labs posted in the "
-                                  "last 24 hours was already in your digest. I'll have new stories as soon as they break."),
-                        "author": "Alfred",
-                    }
+                    # Nothing new since last time: show today's latest stories again rather than an empty answer.
+                    storage.refresh_latest(_cached_news, workflow_res.items)
+                    _save_news_cache()
         except Exception as err:
             logger.warning(f"Live scan fallback to cache: {err}")
             progress.report("Live scan had a problem, using the most recent saved news instead...")
+            saved = [i.scanned_at for i in _ranked_news() if i.scanned_at]
+            when = max(saved).strftime("%d %b, %H:%M") if saved else "an earlier scan"
+            stale_note = (f"⚠️ The live news scan failed just now ({str(err)[:120]}), so these are the stories "
+                          f"from your last saved scan ({when}), not new ones.\n\n")
 
         progress.report("Writing your news digest...")
         top_items = _ranked_news()[:settings.TOP_NEWS_LIMIT]
@@ -721,7 +882,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         _save_news_cache()
 
         digest_blocks = [
-            f"Here is your executive AI intelligence digest for today, Master Ashok. We have synthesized {len(top_items)} high-priority breakthroughs strictly from the last 24 hours:\n"
+            stale_note + f"Here is your executive AI intelligence digest for today, Master Ashok. We have synthesized {len(top_items)} high-priority breakthroughs strictly from the last 24 hours:\n"
         ]
         for i, item in enumerate(top_items, 1):
             score = round(item.scores.total) if getattr(item, "scores", None) else 95
@@ -771,6 +932,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
 
     # 2. Intent: Generate Carousel / Images / Slides
     if intent in ("carousel", "single_image"):
+        ledger = costs.start()
         target = find_target_news()
         if target:
             progress.report(f"Picked the story: \"{target.title[:70]}\"")
@@ -788,6 +950,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
                 "title": target.title,
                 "slides": [f"/api/v1/carousel/{target.id}/single?brand={brand}&v={int(time.time())}"],
                 "caption": await _generate_post_caption(target),
+                "usage": await costs.summary(ledger),
             }
         if target:
             paths = await _carousel_generator.generate_carousel_async(target)
@@ -801,6 +964,7 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
                 "title": target.title,
                 "slides": slide_urls,
                 "caption": caption,
+                "usage": await costs.summary(ledger),
             }
 
     # 3. Intent: Generate Video Script / Blueprint

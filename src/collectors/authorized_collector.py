@@ -14,6 +14,7 @@ Benefits:
 - Concurrent parallel fetching in < 4 seconds.
 """
 
+import re
 import asyncio
 from datetime import datetime, timezone, timedelta
 import hashlib
@@ -28,6 +29,14 @@ from src.collectors.base import BaseCollector
 from src.models.tweet import RawTweet
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_iso(value: str):
+    """'2026-10-18T00:00:00.000Z' -> aware datetime, or None."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (ValueError, AttributeError):
+        return None
 
 
 class AuthorizedNewsCollector(BaseCollector):
@@ -134,15 +143,13 @@ class AuthorizedNewsCollector(BaseCollector):
                 clean_summary = BeautifulSoup(summary, "html.parser").get_text(separator=" ", strip=True)
                 link = getattr(entry, "link", "").strip()
 
-                # Parse publication timestamp
-                dt = datetime.now(timezone.utc)
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
+                # Real publication time only: undated entries can't be proven fresh, so they're skipped
+                dt = None
+                if getattr(entry, "published_parsed", None):
                     dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
+                elif getattr(entry, "updated_parsed", None):
                     dt = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
-
-                # Filter out older news
-                if dt < (cutoff - timedelta(hours=48)):
+                if dt is None or dt < cutoff:
                     continue
 
                 text = f"{title}\n\n{clean_summary}"[:800]
@@ -186,36 +193,43 @@ class AuthorizedNewsCollector(BaseCollector):
 
             soup = BeautifulSoup(resp.text, "html.parser")
             seen_urls = set()
+            candidates = []
             for a in soup.find_all("a"):
                 href = a.get("href", "")
                 if href.startswith("/news/"):
                     full_url = f"https://www.anthropic.com{href}"
-                    if full_url in seen_urls:
+                    text = a.get_text(separator=" ", strip=True)
+                    if full_url in seen_urls or len(text) < 15:
                         continue
                     seen_urls.add(full_url)
-
-                    text = a.get_text(separator=" ", strip=True)
-                    if len(text) < 15:
-                        continue
-
-                    item_id = hashlib.md5(f"Anthropic:{full_url}".encode()).hexdigest()[:16]
-                    items.append(RawTweet(
-                        id=item_id,
-                        author_handle="AnthropicAI",
-                        author_name="Anthropic",
-                        text=f"Official Anthropic Release: {text}"[:800],
-                        created_at=datetime.now(timezone.utc),
-                        likes=250,
-                        retweets=95,
-                        replies=35,
-                        views=10000,
-                        urls=[full_url],
-                        source_url=full_url,
-                        author_weight=1.5,
-                        account_category="official_lab",
-                    ))
-                    if len(items) >= max_items:
-                        break
+                    candidates.append((full_url, text))
+            # The newest posts come first: check their real publish dates (article:published_time)
+            pages = await asyncio.gather(*(client.get(u) for u, _ in candidates[:8]), return_exceptions=True)
+            for (full_url, text), page in zip(candidates[:8], pages):
+                if isinstance(page, Exception) or page.status_code != 200:
+                    continue
+                m = re.search(r'article:published_time"\s+content="([^"]+)"', page.text)
+                published = _parse_iso(m.group(1)) if m else None
+                if not published or published < cutoff:
+                    continue
+                item_id = hashlib.md5(f"Anthropic:{full_url}".encode()).hexdigest()[:16]
+                items.append(RawTweet(
+                    id=item_id,
+                    author_handle="AnthropicAI",
+                    author_name="Anthropic",
+                    text=f"Official Anthropic Release: {text}"[:800],
+                    created_at=published,
+                    likes=250,
+                    retweets=95,
+                    replies=35,
+                    views=10000,
+                    urls=[full_url],
+                    source_url=full_url,
+                    author_weight=1.5,
+                    account_category="official_lab",
+                ))
+                if len(items) >= max_items:
+                    break
         except Exception as e:
             logger.debug(f"Error fetching Anthropic news: {e}")
 
@@ -246,6 +260,9 @@ class AuthorizedNewsCollector(BaseCollector):
                 if not title:
                     continue
 
+                published = _parse_iso(p.get("publishedAt") or paper_data.get("publishedAt") or "")
+                if not published or published < cutoff:
+                    continue
                 item_id = hashlib.md5(f"HF_Paper:{paper_id or title}".encode()).hexdigest()[:16]
                 text = f"Research Paper Breakthrough: {title}\n\n{summary}"[:800]
 
@@ -254,7 +271,7 @@ class AuthorizedNewsCollector(BaseCollector):
                     author_handle="huggingface_papers",
                     author_name="Hugging Face Daily Papers",
                     text=text,
-                    created_at=datetime.now(timezone.utc),
+                    created_at=published,
                     likes=max(upvotes * 8, 80),
                     retweets=upvotes * 2,
                     replies=12,
@@ -278,17 +295,24 @@ class AuthorizedNewsCollector(BaseCollector):
         max_items: int,
         cutoff: datetime,
     ) -> List[RawTweet]:
-        """Fetches trending open-source AI tools and models from GitHub API."""
+        """NEW open-source AI repos: created inside the scan window and already starred (>= 50).
+        (It used to take the most-starred repos *updated* this week: the same famous projects every scan.)"""
         items: List[RawTweet] = []
         try:
-            past_week = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
-            url = f"https://api.github.com/search/repositories?q=topic:artificial-intelligence+pushed:>{past_week}&sort=stars&order=desc&per_page={max_items * 2}"
+            since = cutoff.strftime("%Y-%m-%d")
+            url = (f"https://api.github.com/search/repositories?q=topic:artificial-intelligence+created:>={since}"
+                   f"+stars:>=50&sort=stars&order=desc&per_page={max_items * 2}")
             resp = await client.get(url)
             if resp.status_code != 200:
                 return []
 
             repos = resp.json().get("items", [])
-            for r in repos[:max_items]:
+            for r in repos[:max_items * 2]:
+                created = _parse_iso(r.get("created_at") or "")
+                if not created or created < cutoff:
+                    continue
+                if len(items) >= max_items:
+                    break
                 name = r.get("full_name", "")
                 desc = r.get("description", "") or "Trending Open-Source AI Project"
                 stars = r.get("stargazers_count", 0)
@@ -296,14 +320,14 @@ class AuthorizedNewsCollector(BaseCollector):
                 repo_url = r.get("html_url", "")
 
                 item_id = hashlib.md5(f"GitHub:{name}".encode()).hexdigest()[:16]
-                text = f"🚀 Trending AI Tool/Repo: {name} (⭐ {stars:,} stars)\n\n{desc}"[:800]
+                text = f"🚀 New AI Tool/Repo: {name} (⭐ {stars:,} stars)\n\n{desc}"[:800]
 
                 items.append(RawTweet(
                     id=item_id,
                     author_handle=r.get("owner", {}).get("login", "github"),
                     author_name=name,
                     text=text,
-                    created_at=datetime.now(timezone.utc),
+                    created_at=created,
                     likes=min(stars, 5000),
                     retweets=forks,
                     replies=25,
