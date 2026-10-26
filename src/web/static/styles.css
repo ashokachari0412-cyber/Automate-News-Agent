@@ -1657,3 +1657,42 @@ a.msg-action-btn {
 .script-heygen.bad { color: var(--accent-terracotta); }
 
 .video-job-player { max-width: min(360px, 100%); }
+
+/* Cost receipt under a finished image / video */
+.usage-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-app);
+  font-size: 0.82em;
+  color: var(--text-secondary);
+  max-width: 420px;
+}
+.usage-title { color: var(--text-primary); margin-bottom: 6px; }
+.usage-title b { color: var(--accent-terracotta); }
+.usage-sub { margin: 8px 0 2px; color: var(--text-muted); text-transform: uppercase; font-size: 0.85em; letter-spacing: 0.04em; }
+.usage-table { width: 100%; border-collapse: collapse; }
+.usage-table td { padding: 3px 4px; vertical-align: top; border-top: 1px solid var(--border-light); }
+.usage-table tr:first-child td { border-top: none; }
+.usage-svc { color: var(--text-primary); white-space: nowrap; }
+.usage-usd { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.usage-left { text-align: right; color: var(--status-green); white-space: nowrap; }
+.usage-note { color: var(--text-muted); }
+.usage-other { margin-top: 6px; color: var(--text-muted); }
+
+/* Video length: estimate under his own script, and Alfred's length buttons */
+.script-length { font-size: 0.82em; color: var(--text-secondary); margin-top: 6px; }
+.script-length.hidden { display: none; }
+.video-length-row button:disabled { opacity: 0.5; }
+
+/* Render progress: playful stage word + percentage + bar */
+.render-progress { display: flex; flex-direction: column; gap: 8px; }
+.render-line { display: flex; align-items: center; gap: 8px; font-size: 0.92em; color: var(--text-primary); }
+.render-glyph { color: var(--accent-terracotta); display: inline-block; animation: render-spin 2.4s linear infinite; }
+.render-word { flex: 1; color: var(--accent-terracotta); }
+.render-pct { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.render-bar { height: 6px; border-radius: 999px; background: var(--border-light); overflow: hidden; }
+.render-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent-terracotta); transition: width 0.8s ease; }
+@keyframes render-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .render-glyph { animation: none; } .render-fill { transition: none; } }

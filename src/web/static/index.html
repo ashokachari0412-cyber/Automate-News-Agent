@@ -16,7 +16,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alfred" />
-  <link rel="stylesheet" href="styles.css?v=15" />
+  <link rel="stylesheet" href="styles.css?v=17" />
 </head>
 <body class="alfred-theme">
 
@@ -188,6 +188,7 @@
         </div>
         <div class="script-heygen" id="script-heygen">Checking HeyGen...</div>
         <textarea id="script-text" rows="8" placeholder="Write exactly what you will say. Alfred keeps your words, splits them into clips and adds the visuals."></textarea>
+        <div class="script-length hidden" id="script-length"></div>
         <div class="script-aspect hidden" id="script-aspect">
           <span>Ratio</span>
           <select id="script-aspect-select">
@@ -212,7 +213,7 @@
     <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   </div>
 
-  <script src="app.js?v=16"></script>
+  <script src="app.js?v=18"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW registration failed:", e));

@@ -188,10 +188,19 @@
     const go = document.getElementById("script-go");
     const aspectRow = document.getElementById("script-aspect");
     let kind = "video";
+    const lengthLine = document.getElementById("script-length");
+    // His words are kept as written, so the video is as long as the script: show that while he types.
+    const updateLength = () => {
+      const words = text.value.trim() ? text.value.trim().split(/\s+/).length : 0;
+      lengthLine.classList.toggle("hidden", kind !== "video" || !words);
+      lengthLine.textContent = `About ${Math.max(1, Math.round(words / WORDS_PER_SECOND))} s of video · ${words} words`;
+    };
+    text.addEventListener("input", updateLength);
     const setKind = (k) => {
       kind = k;
       panel.querySelectorAll(".script-kind-btn").forEach((b) => b.classList.toggle("active", b.dataset.kind === k));
       aspectRow.classList.toggle("hidden", k !== "image");
+      updateLength();
       document.getElementById("script-heygen").classList.toggle("hidden", k !== "video");
       go.textContent = k === "video" ? "Generate video" : "Generate image";
       text.placeholder = k === "video"
@@ -222,6 +231,7 @@
       if (!script || isGenerating) return;
       close();
       text.value = "";
+      updateLength();
       const aspect = document.getElementById("script-aspect-select").value;
       if (kind === "video") sendPrompt(script, "Planning clips from your script...", "custom_video");
       else sendPrompt(script, "Creating your image...", "custom_image", { aspect });
@@ -411,6 +421,8 @@
 
   // Polls the backend for the job's current step and shows it live: the current step with a
   // spinner, finished steps above it with a check mark (only the last few are kept).
+  const WORDS_PER_SECOND = 2.75; // his speaking pace in videos (same as studio.WORDS_PER_SECOND)
+
   function watchProgress(jobId, bubbleId) {
     let stopped = false;
     let last = null;
@@ -634,7 +646,23 @@
       dl.textContent = "Download";
       actions.appendChild(dl);
       block.appendChild(actions);
+      const receipt = renderUsage(data.usage && { ...data.usage, kind: "image" });
+      if (receipt) block.appendChild(receipt);
       body.appendChild(block);
+    }
+
+    if (data.action === "video_length" && Array.isArray(data.options)) {
+      const row = document.createElement("div");
+      row.className = "msg-actions video-length-row";
+      data.options.forEach((secs) => {
+        row.appendChild(makeButton(`${secs} s`, secs === 30, () => {
+          if (isGenerating) return;
+          row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+          sendPrompt(`${secs} seconds`, `Writing a ${secs}-second script...`, "video_plan",
+            { video_brief: data.video_brief, video_seconds: secs, news_id: data.news_id || null });
+        }));
+      });
+      body.appendChild(row);
     }
 
     if (data.action === "video_job" && data.job_id) {
@@ -802,27 +830,110 @@
     window.addEventListener("scroll", hide, true);
   }
 
+  // Receipt under a finished image/video: each paid item, total per service, and what's left in each account.
+  const BALANCE_HINT = { "Google Gemini": "free tier", Pollinations: "free" };
+  function renderUsage(usage) {
+    if (!usage || !usage.items) return null;
+    const money = (v) => `$${Number(v || 0).toFixed(v > 0 && v < 0.1 ? 3 : 2)}`;
+    const el = document.createElement("div");
+    el.className = "usage-card";
+    const rows = usage.items.map((it) => `<tr><td class="usage-svc">${escapeHtml(it.service)}</td>
+      <td>${escapeHtml(it.item)}${it.note ? ` <span class="usage-note">(${escapeHtml(it.note)})</span>` : ""}</td>
+      <td class="usage-usd">${money(it.usd)}</td></tr>`).join("");
+    const services = Object.entries(usage.per_service || {}).map(([svc, usd]) => {
+      const left = (usage.balances || {})[svc];
+      const remaining = left != null ? `${money(left)} left` : (BALANCE_HINT[svc] || "");
+      return `<tr><td class="usage-svc">${escapeHtml(svc)}</td><td class="usage-usd">${money(usd)}</td>
+        <td class="usage-left">${escapeHtml(remaining)}</td></tr>`;
+    }).join("");
+    const others = Object.entries(usage.balances || {}).filter(([svc, v]) => v != null && !(svc in (usage.per_service || {})))
+      .map(([svc, v]) => `${escapeHtml(svc)} ${money(v)} left`).join(" · ");
+    el.innerHTML = `<div class="usage-title">Cost of this ${usage.kind || "render"} · <b>${money(usage.total_usd)}</b></div>
+      ${usage.items.length ? `<table class="usage-table">${rows}</table>
+      <div class="usage-sub">Per service</div><table class="usage-table">${services}</table>`
+        : `<div class="usage-note">No paid service was used.</div>`}
+      ${others ? `<div class="usage-other">${others}</div>` : ""}`;
+    return el;
+  }
+
+  // Playful words per stage of a render (rotated like Claude's "Noodling..."), shown with the overall %.
+  const STAGE_WORDS = {
+    starting: ["Warming up", "Stretching", "Booting up"],
+    imagining: ["Imagining", "Daydreaming", "Sketching", "Doodling", "Envisioning"],
+    animating: ["Animating", "Noodling", "Wiggling pixels", "Choreographing", "Conjuring"],
+    recording: ["Booping", "Rehearsing", "Clearing throat", "Lip-syncing", "Percolating", "Mulling", "Brewing"],
+    polishing: ["Polishing", "Steadying", "Buffing", "Smoothing"],
+    stitching: ["Stitching", "Splicing", "Weaving", "Assembling"],
+    finishing: ["Finishing", "Wrapping up", "Sprinkling captions", "Tying the bow"],
+  };
+
+  function renderProgress(box, job, state) {
+    let el = box.querySelector(".render-progress");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "render-progress";
+      el.innerHTML = `<div class="render-line"><span class="render-glyph">✻</span>
+        <span class="render-word"></span><span class="render-pct"></span></div>
+        <div class="render-bar"><div class="render-fill"></div></div>`;
+      box.querySelector(".video-job-status").replaceWith(el);
+    }
+    const pct = Math.max(0, Math.min(100, job.progress || 0));
+    el.querySelector(".render-pct").textContent = `${pct}%`;
+    el.querySelector(".render-fill").style.width = `${pct}%`;
+    const stage = STAGE_WORDS[job.stage] ? job.stage : "starting";
+    if (state.stage !== stage) {
+      state.stage = stage;
+      state.i = 0;
+      el.querySelector(".render-word").textContent = `${STAGE_WORDS[stage][0]}…`;
+    }
+    if (!state.timer) {
+      state.timer = setInterval(() => {
+        const list = STAGE_WORDS[state.stage];
+        state.i = (state.i + 1) % list.length;
+        const w = box.querySelector(".render-word");
+        if (w) w.textContent = `${list[state.i]}…`;
+      }, 2600);
+    }
+  }
+
   // Polls a HeyGen render job until the 9:16 video is ready, then shows the player.
   function watchVideoJob(jobId, box) {
-    const msg = box.querySelector(".video-job-msg");
+    const state = { stage: null, i: 0, timer: null };
+    const stopWords = () => { if (state.timer) clearInterval(state.timer); state.timer = null; };
+    // The plain status line (used for "ready to render" and errors); brings it back if the progress bar replaced it.
+    const statusMsg = () => {
+      const bar = box.querySelector(".render-progress");
+      if (bar) {
+        bar.insertAdjacentHTML("beforebegin",
+          `<div class="video-job-status"><span class="video-job-dot"></span><span class="video-job-msg"></span></div>`);
+        bar.remove();
+      }
+      return box.querySelector(".video-job-msg");
+    };
     const tick = async () => {
       try {
         const job = await (await fetch(`/api/v1/studio/jobs/${jobId}`)).json();
         if (job.status === "done" && job.url) {
+          stopWords();
           box.innerHTML = `<video class="video-job-player" controls playsinline preload="metadata" src="${job.url}"></video>
             <div class="msg-actions"><a class="msg-action-btn" href="${job.url}" download="alfred-video.mp4">Download video</a></div>`;
+          const receipt = renderUsage(job.usage && { ...job.usage, kind: "video" });
+          if (receipt) box.appendChild(receipt);
           scrollToBottom();
           return;
         }
         if (job.status === "failed" || job.detail || job.status === "cancelled") {
+          stopWords();
           box.classList.add("failed");
-          msg.textContent = job.message || job.detail || "The video failed.";
+          statusMsg().textContent = job.message || job.detail || "The video failed.";
+          const spent = job.usage && job.usage.total_usd > 0 && renderUsage({ ...job.usage, kind: "failed render (already charged)" });
+          if (spent) box.appendChild(spent);
           return;
         }
         if (job.status === "awaiting_approval") {
           // Nothing paid runs until he confirms.
           const est = job.estimate || {};
-          msg.textContent = `Ready to render · about $${est.total_usd ?? "?"} (HeyGen $${est.heygen_usd ?? "?"} + top half $${est.content_usd ?? "?"})`;
+          statusMsg().textContent = `Ready to render · about $${est.total_usd ?? "?"} (HeyGen $${est.heygen_usd ?? "?"} + top half $${est.content_usd ?? "?"})`;
           if (!box.querySelector(".video-job-actions")) {
             const row = document.createElement("div");
             row.className = "msg-actions video-job-actions";
@@ -844,11 +955,11 @@
           }
           return; // stop polling until he decides
         }
-        msg.textContent = job.message || "Working...";
+        renderProgress(box, job, state);
       } catch (e) {
-        msg.textContent = "Checking the render status...";
+        /* transient polling error: keep showing the last state */
       }
-      setTimeout(tick, 6000);
+      setTimeout(tick, 4000);
     };
     tick();
   }

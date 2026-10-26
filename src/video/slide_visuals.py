@@ -190,14 +190,8 @@ def _image_models() -> List[str]:
 ASPECT_SIZES = {"4:5": (1080, 1350), "1:1": (1080, 1080), "9:16": (1080, 1920), "16:9": (1920, 1080)}
 
 
-# GPT Image sizes per aspect (custom WIDTHxHEIGHT is accepted; the standard size is the fallback).
-OPENAI_SIZES = {"16:9": ("1536x864", "1536x1024"), "9:16": ("864x1536", "1024x1536"),
-                "4:5": ("1024x1280", "1024x1536"), "1:1": ("1024x1024", "1024x1024")}
-_openai_cooldown_until = 0.0
-
-
 def _openai_env() -> Dict[str, str]:
-    """GPT Image settings, read fresh from .env (adding the key needs no restart)."""
+    """WaveSpeed image settings, read fresh from .env (adding the key needs no restart)."""
     values: Dict[str, str] = {}
     try:
         from dotenv import dotenv_values
@@ -205,10 +199,7 @@ def _openai_env() -> Dict[str, str]:
         values = {k: (v or "").strip().strip('"').strip("'") for k, v in dotenv_values(env_file).items()}
     except Exception:
         pass
-    return {"key": values.get("OPENAI_API_KEY", ""),
-            "model": values.get("OPENAI_IMAGE_MODEL") or "gpt-image-2.5-flare",
-            "quality": values.get("OPENAI_IMAGE_QUALITY") or "medium",
-            "wavespeed_key": values.get("WAVESPEED_API_KEY", ""),
+    return {"wavespeed_key": values.get("WAVESPEED_API_KEY", ""),
             "wavespeed_model": values.get("WAVESPEED_IMAGE_MODEL") or "bytedance/seedream-v5.0-flash",
             "wavespeed_resolution": values.get("WAVESPEED_IMAGE_RESOLUTION") or "2k"}
 
@@ -218,7 +209,7 @@ _wavespeed_cooldown_until = 0.0
 
 def _render_with_wavespeed(prompt: str, label: str = "photo", aspect: str = "4:5") -> Optional[bytes]:
     """First choice for every image: Seedream 5.0 Flash on WaveSpeed (same key as Wan; ~$0.027 per image).
-    None = fall back to GPT Image / Nano Banana / Flux."""
+    None = fall back to Nano Banana / Flux."""
     global _wavespeed_cooldown_until
     cfg = _openai_env()
     if not cfg["wavespeed_key"] or time.monotonic() < _wavespeed_cooldown_until:
@@ -254,6 +245,8 @@ def _render_with_wavespeed(prompt: str, label: str = "photo", aspect: str = "4:5
                     img = client.get(url)
                     if img.status_code == 200 and len(img.content) > 5000:
                         logger.info(f"Image rendered with {cfg['wavespeed_model']} ({aspect}, {cfg['wavespeed_resolution']})")
+                        from src import costs
+                        costs.record("WaveSpeed", f"Image · {name} ({aspect})", costs.SEEDREAM_PER_IMAGE)
                         return img.content
                     return None
                 if status in ("failed", "cancelled", "timeout", "deleted"):
@@ -261,39 +254,6 @@ def _render_with_wavespeed(prompt: str, label: str = "photo", aspect: str = "4:5
                     return None
     except Exception as e:
         logger.warning(f"WaveSpeed image request failed ({e}); falling back")
-    return None
-
-
-def _render_with_openai(prompt: str, label: str = "photo", aspect: str = "4:5") -> Optional[bytes]:
-    """First choice for every image: OpenAI GPT Image (medium quality). None = fall back to Gemini / Flux."""
-    global _openai_cooldown_until
-    cfg = _openai_env()
-    if not cfg["key"] or time.monotonic() < _openai_cooldown_until:
-        return None
-    import base64
-    progress.report(f"Creating {label} with GPT Image ({cfg['quality']})...")
-    custom, standard = OPENAI_SIZES.get(aspect, ("1024x1024", "1024x1024"))
-    headers = {"Authorization": f"Bearer {cfg['key']}", "Content-Type": "application/json"}
-    for size in dict.fromkeys([custom, standard]):
-        body = {"model": cfg["model"], "prompt": prompt[:30000], "size": size, "quality": cfg["quality"],
-                "output_format": "png", "n": 1}
-        try:
-            r = httpx.post("https://api.openai.com/v1/images/generations", headers=headers, json=body, timeout=180)
-        except Exception as e:
-            logger.warning(f"GPT Image request failed ({e}); falling back")
-            return None
-        if r.status_code == 200:
-            data = (r.json().get("data") or [{}])[0].get("b64_json")
-            if data:
-                logger.info(f"Image rendered with {cfg['model']} ({size}, {cfg['quality']})")
-                return base64.b64decode(data)
-        msg = r.text[:200]
-        if r.status_code == 400 and "size" in msg.lower() and size != standard:
-            continue  # custom size not accepted: try the standard one
-        if r.status_code in (401, 403, 429) or "billing" in msg.lower() or "quota" in msg.lower():
-            _openai_cooldown_until = time.monotonic() + _QUOTA_COOLDOWN  # key/billing/quota problem: skip for a while
-        logger.warning(f"GPT Image unavailable ({r.status_code}: {msg}); falling back to Gemini / Flux")
-        return None
     return None
 
 
@@ -318,6 +278,8 @@ def _render_with_gemini(prompt: str, llm: LLMClient, label: str = "photo", aspec
             for part in response.candidates[0].content.parts:
                 if getattr(part, "inline_data", None) and part.inline_data.data:
                     logger.info(f"Image rendered with {model}")
+                    from src import costs
+                    costs.record("Google Gemini", f"Image · {FRIENDLY_MODEL_NAMES.get(model, model)}", 0.0, "free tier")
                     return part.inline_data.data
             logger.warning(f"{model} returned no image, trying next model")
         except Exception as e:
@@ -350,6 +312,8 @@ def _render_with_pollinations(prompt: str, seed: int, label: str = "photo", aspe
                 with httpx.Client(timeout=90.0, follow_redirects=True) as client:
                     res = client.get(url)
                 if res.status_code == 200 and len(res.content) > 5000:
+                    from src import costs
+                    costs.record("Pollinations", "Image · Flux", 0.0, "free")
                     return res.content
                 logger.warning(f"Pollinations returned HTTP {res.status_code} (attempt {attempt + 1}/5)")
             except Exception as e:
@@ -363,9 +327,8 @@ def _render(prompt: str, seed: int, out_path: Path, llm: LLMClient,
             label: str = "photo", on_done=None, aspect: str = "4:5") -> Optional[Path]:
     full_prompt = prompt + IMAGE_SUFFIX
     data = (_render_with_wavespeed(full_prompt, label, aspect)         # 1. Seedream 5.0 Flash (WaveSpeed)
-            or _render_with_openai(full_prompt, label, aspect)           # 2. GPT Image (only if OPENAI_API_KEY set)
-            or _render_with_gemini(full_prompt, llm, label, aspect)      # 3. Nano Banana (free tier)
-            or _render_with_pollinations(full_prompt, seed, label, aspect))  # 4. Flux (free)
+            or _render_with_gemini(full_prompt, llm, label, aspect)      # 2. Nano Banana (free tier)
+            or _render_with_pollinations(full_prompt, seed, label, aspect))  # 3. Flux (free)
     if on_done:
         on_done(bool(data))
     if not data:

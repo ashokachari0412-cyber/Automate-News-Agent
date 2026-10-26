@@ -30,12 +30,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 STUDIO_DIR = BASE_DIR / "artifacts" / "studio"
 JOBS_FILE = STUDIO_DIR / "jobs.json"
 HEYGEN = "https://api.heygen.com"
-WORDS_PER_SECOND = 2.5
+WORDS_PER_SECOND = 2.75  # his real pace with the 10% faster voice (27 words = ~9.6 s)
+VIDEO_LENGTHS = [10, 20, 30, 45, 60]  # seconds offered in the app
+DEFAULT_SECONDS = 30
 
 _llm = LLMClient(settings)
 
 PLAN_PROMPT = """You are the creative director of Master Ashok's (@ashok_a.i) short-form AI videos.
-Plan a vertical 9:16 split-screen video (30-50 seconds): the TOP half shows content visuals, the BOTTOM half
+Plan a vertical 9:16 split-screen video ({seconds} seconds): the TOP half shows content visuals, the BOTTOM half
 shows Ashok's AI avatar explaining.
 
 {source}
@@ -51,8 +53,10 @@ Return ONLY JSON:
   ]}}
 
 Rules:
-- 5 to 7 scenes. Scene 1 speaks the hook; the last scene is a short call to action.
-- Each scene 8-20 spoken words (about 3-8 seconds). Plain, punchy spoken English.
+- LENGTH IS STRICT: the whole script is {words_lo}-{words_hi} spoken words in total (= {seconds} seconds at his pace).
+- Exactly {scenes} scene(s), about {per_scene} spoken words each. Scene 1 speaks the hook; the last scene lands the
+  key takeaway. Plain, punchy spoken English.
+- NEVER add a call to action like "Follow for more updates" (his cloned voice says it badly).
 - Visuals must show the actual subject of that clip (product, device, place, result), never generic people at laptops."""
 
 SCRIPT_SOURCE = """Use HIS SCRIPT below. Keep his words EXACTLY, in order: do not add, remove or reword anything.
@@ -120,10 +124,10 @@ def video_env() -> Dict[str, str]:
             "resolution": values.get("TOP_VIDEO_RESOLUTION") or "720p"}
 
 
-# Rough API prices (USD) for the estimate shown before rendering. Verify on the providers' pricing pages.
-HEYGEN_PER_MIN = {"avatar_iii": 1.0, "avatar_iv": 4.83, "avatar_v": 7.20}
-OMNI_PER_SEC = {"360p": 0.03, "720p": 0.10, "1080p": 0.15}
-WAN_PER_SEC = {"720p": 0.025, "1080p": 0.0375}  # silent, Singapore region (first 50 s free for new users)
+# API prices (USD) for the estimate before rendering and the receipt after (see src/costs.py).
+from src import costs
+from src.costs import HEYGEN_PER_MIN, OMNI_PER_SEC, WAN_PER_SEC
+ENGINE_NAMES = {"avatar_iii": "Avatar III", "avatar_iv": "Avatar IV", "avatar_v": "Avatar V"}
 
 
 def estimate_cost(plan: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,6 +255,20 @@ def _fmt(sec: float) -> str:
     return f"{int(sec // 60):02d}:{int(sec % 60):02d}"
 
 
+CTA_RE = re.compile(r"[^.!?]*\b(follow|subscribe)\b[^.!?]*\bfor more\b[^.!?]*[.!?]?", re.I)
+
+
+def _drop_cta(scenes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Removes "Follow for more (AI) updates"-style lines: his cloned voice says them badly.
+    A scene left with nothing to say is dropped."""
+    kept = []
+    for s in scenes:
+        spoken = " ".join(CTA_RE.sub(" ", str(s.get("spoken", ""))).split())
+        if spoken:
+            kept.append({**s, "spoken": spoken})
+    return kept
+
+
 def _split_script(script: str, max_words: int = 20) -> List[str]:
     """His script -> clips by sentence (short sentences merged, long ones split), words untouched."""
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", " ".join(script.split())) if s]
@@ -282,7 +300,15 @@ Return ONLY JSON: {{"title": "<short title>", "scenes": [{{
 Exactly {n} scenes, in order. Visuals must show the actual subject of each clip, never generic people at laptops."""
 
 
-async def plan_video(brief: str, custom_script: bool = False) -> Dict[str, Any]:
+def _length_rules(seconds: int) -> Dict[str, int]:
+    """Target words and scene count for a video of `seconds` (one scene per ~6 s, 1-8 scenes)."""
+    words = round(seconds * WORDS_PER_SECOND)
+    scenes = max(1, min(8, round(seconds / 6)))
+    return {"seconds": seconds, "words_lo": round(words * 0.9), "words_hi": round(words * 1.05),
+            "scenes": scenes, "per_scene": round(words / scenes)}
+
+
+async def plan_video(brief: str, custom_script: bool = False, seconds: Optional[int] = None) -> Dict[str, Any]:
     if custom_script:
         # His words are split by code and never sent back through the model, so they can't be changed.
         clips = _split_script(brief)
@@ -299,8 +325,10 @@ async def plan_video(brief: str, custom_script: bool = False) -> Dict[str, Any]:
                            "motion": s.get("motion") or "Slow cinematic push-in with subtle natural movement"})
         data = {"title": data.get("title"), "hook": clips[0]}
     else:
-        data = await _llm.generate_json(PLAN_PROMPT.format(source=BRIEF_SOURCE.format(brief=brief)))
+        data = await _llm.generate_json(PLAN_PROMPT.format(source=BRIEF_SOURCE.format(brief=brief),
+                                                           **_length_rules(int(seconds or DEFAULT_SECONDS))))
         scenes = [s for s in (data.get("scenes") or []) if isinstance(s, dict) and s.get("spoken")]
+    scenes = _drop_cta(scenes)
     if not scenes:
         raise ValueError("The planner returned no scenes")
     t = 0.0
@@ -310,7 +338,7 @@ async def plan_video(brief: str, custom_script: bool = False) -> Dict[str, Any]:
         s["start"], s["end"] = _fmt(t), _fmt(t + dur)
         t += dur
     return {"title": data.get("title") or "Alfred video", "hook": data.get("hook") or scenes[0]["spoken"],
-            "scenes": scenes, "duration_sec": round(t)}
+            "scenes": scenes, "duration_sec": round(t), "target_sec": seconds}
 
 
 def plan_markdown(plan: Dict[str, Any]) -> str:
@@ -341,16 +369,33 @@ async def make_image(request: str, aspect: Optional[str] = None, exact_prompt: b
         aspect = aspect or (data.get("aspect") if data.get("aspect") in ("1:1", "4:5", "9:16", "16:9") else "4:5")
     STUDIO_DIR.mkdir(parents=True, exist_ok=True)
     name = f"img_{uuid.uuid4().hex[:10]}.png"
+    ledger = costs.start()
     path = await asyncio.to_thread(_render_image, prompt, aspect, STUDIO_DIR / name, "your image")
     if not path:
         raise RuntimeError("All image models failed (quota or network). Please try again in a minute.")
-    return {"file": name, "url": f"/api/v1/studio/files/{name}", "prompt": prompt, "aspect": aspect}
+    return {"file": name, "url": f"/api/v1/studio/files/{name}", "prompt": prompt, "aspect": aspect,
+            "usage": await costs.summary(ledger)}
+
+
+# ----------------------------------------------------------------------------- progress
+# Overall % = top half (images + clips) 33% + HeyGen take 50% + polish/stitch 15%, plus 2% for starting.
+# The app shows the % and a playful word for the current stage (imagining, animating, recording, ...).
+def _progress(job: Dict[str, Any], stage: Optional[str] = None, **parts: float) -> None:
+    job.update({f"_{k}": v for k, v in parts.items()})
+    pct = 2 + 33 * job.get("_top", 0) + 50 * job.get("_hg", 0) + 15 * job.get("_post", 0)
+    job["progress"] = max(job.get("progress", 0), min(99, int(pct)))
+    if stage:
+        job["stage"] = stage
+    _save_job(job)
 
 
 # ----------------------------------------------------------------------------- HeyGen
 async def _heygen_take(client: httpx.AsyncClient, hg: Dict[str, Any], script: str, job: Dict[str, Any]) -> Path:
     """ONE continuous avatar take of the whole script (landscape, filled), downloaded when ready."""
+    from src.video.split_video import AVATAR_SPEED
     body = {"type": "avatar", "avatar_id": hg["avatar_id"], "voice_id": hg["voice_id"], "script": script,
+            # HeyGen speaks faster itself and animates the lips to it at full frame rate (no dropped frames)
+            "voice_settings": {"speed": AVATAR_SPEED},
             "engine": {"type": hg["engine"]}, "aspect_ratio": "16:9", "fit": "cover", "resolution": "1080p",
             "title": f"Alfred: {job['plan']['title'][:60]}"}
     r = await client.post(f"{HEYGEN}/v3/videos", headers=_headers(), json=body)
@@ -359,16 +404,25 @@ async def _heygen_take(client: httpx.AsyncClient, hg: Dict[str, Any], script: st
     video_id = r.json()["data"]["video_id"]
     job["video_id"] = video_id
     _save_job(job)
+    import math
+    expected = 120 + 20 * len(script.split()) / WORDS_PER_SECOND  # HeyGen gives no %: ~2-8 min for 10 s
     for i in range(360):  # up to 60 minutes (a 10 s test took ~8.5 min; 50 s can take much longer)
         await asyncio.sleep(10)
         d = (await client.get(f"{HEYGEN}/v3/videos/{video_id}", headers=_headers())).json().get("data") or {}
         job["heygen_status"] = f"{d.get('status', 'processing')}, {(i + 1) * 10 // 60} min"
         if job.get("top_engines"):  # top half done: show HeyGen's live progress in the chat
             job["message"] = f"Top half ready. HeyGen is rendering your clone ({job['heygen_status']})..."
-        _save_job(job)  # heartbeat, so a long render isn't mistaken for an interrupted job
+        # time-based: moves quickly at first, then slows, never stalls; heartbeat for the job too
+        _progress(job, "recording" if job.get("top_engines") else None,
+                  hg=min(0.95, 1 - math.exp(-(i + 1) * 10 / expected)))
         if d.get("status") == "completed" and d.get("video_url"):
             out = STUDIO_DIR / f"{job['id']}_avatar.mp4"
             out.write_bytes((await client.get(d["video_url"])).content)
+            from src.video.split_video import media_duration
+            secs = float(d.get("duration") or media_duration(out))
+            _progress(job, hg=1.0)
+            costs.record("HeyGen", f"Avatar video · {ENGINE_NAMES.get(hg['engine'], hg['engine'])}, {secs:.1f}s",
+                         HEYGEN_PER_MIN.get(hg["engine"], 1.0) * secs / 60)
             return out
         if d.get("status") == "failed":
             raise RuntimeError(f"HeyGen failed: {d.get('failure_message') or d.get('failure_code')}")
@@ -380,14 +434,17 @@ async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
     from src.video import split_video
     plan, top = job["plan"], video_env()
     sources: List[Dict[str, Any]] = []
+    n = len(plan["scenes"])
     for i, sc in enumerate(plan["scenes"], 1):
         job["message"] = f"Creating image {i} of {len(plan['scenes'])} for the top half..."
-        _save_job(job)
+        _progress(job, "imagining", top=(i - 1) / n)
         img = await asyncio.to_thread(_render_image, sc["visual"], "16:9", STUDIO_DIR / f"{job['id']}_scene{i}.png",
                                       f"clip {i} image")
         if not img:
             raise RuntimeError(f"All image models failed for clip {i}")
         src: Dict[str, Any] = {"image": str(img), "engine": "kenburns"}
+        _progress(job, "animating" if top["engine"] in ("wan", "omni_flash") else None,
+                  top=(i - 0.5) / n if top["engine"] in ("wan", "omni_flash") else i / n)
         if top["engine"] == "wan":
             job["message"] = f"Animating clip {i} of {len(plan['scenes'])} with Wan 2.6 Flash..."
             _save_job(job)
@@ -406,29 +463,44 @@ async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
                 clip = await asyncio.to_thread(split_video.omni_clip, img, f"{sc.get('motion', '')}. {sc['visual']}",
                                                STUDIO_DIR / f"{job['id']}_clip{i}.mp4", top["resolution"])
                 src.update(video=str(clip), engine="omni_flash")
+                secs = split_video.media_duration(clip)
+                costs.record("Google Gemini", f"Video clip · Omni Flash {top['resolution']}, {secs:.0f}s",
+                             OMNI_PER_SEC.get(top["resolution"], 0.10) * secs)
             except Exception as e:  # no billing / quota / old SDK: keep going with the free zoom
                 logger.warning(f"Omni Flash unavailable for clip {i}, using free zoom instead: {e}")
                 src["note"] = str(e)[:200]
         sources.append(src)
+        _progress(job, top=i / n)
     return sources
 
 
 async def _build(job_id: str) -> None:
     from src.video import split_video
     job = _load_jobs()[job_id]
+    ledger = costs.start()
     try:
         hg = await resolve_heygen()  # fail fast (bad key / no avatar) before spending anything
+        if job.get("engine"):  # one-off engine for this job (e.g. an Avatar IV test); .env stays as it is
+            hg = {**hg, "engine": job["engine"]}
         plan = job["plan"]
+        plan["scenes"] = _drop_cta(plan["scenes"]) or plan["scenes"]
         script = " ".join(s["spoken"] for s in plan["scenes"])
         job.update(status="rendering", message="HeyGen is recording your clone; creating the top-half visuals...")
-        _save_job(job)
+        _progress(job, "imagining")
         async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
             avatar_task = asyncio.create_task(_heygen_take(client, hg, script, job))
             sources = await _content_sources(job)
             job.update(message="Top half ready. Waiting for HeyGen to finish your clone (can take 10-40 minutes)...",
                        top_engines=[s["engine"] for s in sources])
             _save_job(job)
-            avatar = await avatar_task
+            raw_avatar = await avatar_task
+
+        avatar = raw_avatar  # HeyGen's take as it is (already 10% faster via voice_settings)
+        if split_video.STEADY_HEAD:
+            job["message"] = "Polishing your clone: steadier head..."
+            _progress(job, "polishing", top=1.0, hg=1.0)
+            avatar = await asyncio.to_thread(split_video.polish_avatar, raw_avatar,
+                                             STUDIO_DIR / f"{job_id}_avatar_fast.mp4", speed=1.0)
 
         # Sync clip lengths to his real voice: split the take's duration by each clip's share of the words.
         total = split_video.media_duration(avatar)
@@ -436,7 +508,7 @@ async def _build(job_id: str) -> None:
         durations = [total * w / sum(words) for w in words]
 
         job["message"] = "Putting it together: content on top, you on the bottom..."
-        _save_job(job)
+        _progress(job, "stitching", post=0.4)
         clips: List[Path] = []
         for i, (src, d) in enumerate(zip(sources, durations), 1):
             if src.get("video"):
@@ -445,14 +517,15 @@ async def _build(job_id: str) -> None:
                 clips.append(await asyncio.to_thread(split_video.kenburns_clip, Path(src["image"]), d + 0.5,
                                                      STUDIO_DIR / f"{job_id}_kb{i}.mp4", i))
         name = f"{job_id}.mp4"
+        _progress(job, "finishing", post=0.6)
         await asyncio.to_thread(split_video.compose, clips, durations, avatar, STUDIO_DIR / name,
                                 STUDIO_DIR / f"{job_id}_work", script)
         job.update(status="done", message="Your video is ready.", file=name, url=f"/api/v1/studio/files/{name}",
-                   duration=round(total, 1))
+                   duration=round(total, 1), usage=await costs.summary(ledger), progress=100, stage="done")
         _save_job(job)
     except Exception as e:
         logger.error(f"Studio job {job_id} failed: {e}")
-        job.update(status="failed", message=str(e)[:300])
+        job.update(status="failed", message=str(e)[:300], usage=await costs.summary(ledger))  # what was spent anyway
         _save_job(job)
 
 
@@ -472,10 +545,10 @@ async def approve_job(job_id: str) -> Optional[Dict[str, Any]]:
     if not job:
         return None
     if job["status"] == "awaiting_approval":
-        job.update(status="queued", message="Starting...", approved=time.time())
+        job.update(status="queued", message="Starting...", approved=time.time(), progress=0, stage="starting")
         _save_job(job)
         asyncio.create_task(_build(job_id))
-    return {k: v for k, v in job.items() if k != "plan"}
+    return {k: v for k, v in job.items() if k != "plan" and not k.startswith("_")}
 
 
 async def cancel_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -483,7 +556,7 @@ async def cancel_job(job_id: str) -> Optional[Dict[str, Any]]:
     if job and job["status"] == "awaiting_approval":
         job.update(status="cancelled", message="Cancelled. Nothing was rendered or charged.")
         _save_job(job)
-    return {k: v for k, v in job.items() if k != "plan"} if job else None
+    return {k: v for k, v in job.items() if k != "plan" and not k.startswith("_")} if job else None
 
 
 async def job_status(job_id: str) -> Optional[Dict[str, Any]]:
@@ -494,7 +567,7 @@ async def job_status(job_id: str) -> Optional[Dict[str, Any]]:
     if busy and time.time() - job.get("updated", 0) > 900:  # no heartbeat for 15 min = the server restarted
         job.update(status="failed", message="The job was interrupted (server restarted). Please ask again.")
         _save_job(job)
-    return {k: v for k, v in job.items() if k != "plan"}
+    return {k: v for k, v in job.items() if k != "plan" and not k.startswith("_")}
 
 
 async def _cli_check() -> None:
@@ -510,8 +583,7 @@ async def _cli_check() -> None:
     oi = _openai_env()
     print(f"Images: 1. {oi['wavespeed_model']} ({oi['wavespeed_resolution']}, WaveSpeed) · key: "
           f"{'set' if oi['wavespeed_key'] else 'MISSING (WAVESPEED_API_KEY)'}")
-    print(f"        2. GPT Image {oi['model']} ({oi['quality']}) · key: {'set' if oi['key'] else 'not set (skipped)'}"
-          " · 3. Nano Banana · 4. Flux")
+    print("        2. Nano Banana (free tier) · 3. Flux (free)")
     from src.video.split_video import _dashscope_env
     top, wan = video_env(), _dashscope_env()
     print(f"Top half: {top['engine']} at {top['resolution']}")

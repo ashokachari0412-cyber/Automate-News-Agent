@@ -175,6 +175,9 @@ class AlfredChatRequest(BaseModel):
     mode: Optional[str] = None  # "google" = G-Intelligence: answer from the connected Google apps
     style_hint: Optional[str] = None  # extra reply-style instructions (voice); never used for routing
     aspect: Optional[str] = None  # image aspect ratio chosen in the Custom Script panel
+    video_brief: Optional[str] = None  # mode "video_plan": the brief saved when Alfred asked for the length
+    video_seconds: Optional[int] = None  # mode "video_plan": the length he picked
+    news_id: Optional[str] = None
 
 
 class CaptionRequest(BaseModel):
@@ -606,12 +609,28 @@ async def _route_intent(message: str, history: List[Dict[str, str]]) -> Dict[str
     return _keyword_route(message.lower())
 
 
-async def _studio_video(brief: str, custom_script: bool = False, news_id: Optional[str] = None) -> Dict[str, Any]:
+def _ask_video_length(brief: str, news_id: Optional[str] = None) -> Dict[str, Any]:
+    """Before writing the script: ask how long the video should be (the app shows the lengths as buttons)."""
+    return {"reply": "How long should the video be? I'll write the script to fit that length.", "author": "Alfred",
+            "action": "video_length", "video_brief": brief, "news_id": news_id, "options": studio.VIDEO_LENGTHS}
+
+
+def _seconds_in(text: str) -> Optional[int]:
+    """'a 30 second reel' / '45s' / '1 minute' -> seconds, if he already said the length."""
+    m = re.search(r"\b(\d{1,3})\s*-?\s*(s|sec|secs|second|seconds|min|mins|minute|minutes)\b", text.lower())
+    if not m:
+        return None
+    n = int(m.group(1)) * (60 if m.group(2).startswith("min") else 1)
+    return n if 5 <= n <= 180 else None
+
+
+async def _studio_video(brief: str, custom_script: bool = False, news_id: Optional[str] = None,
+                        seconds: Optional[int] = None) -> Dict[str, Any]:
     """Plan the clips, show them, and start the HeyGen render in the background."""
-    progress.report("Planning the hook and the time-coded clips..." if not custom_script
-                    else "Splitting your script into clips and planning the visuals...")
+    progress.report(f"Writing a {seconds or studio.DEFAULT_SECONDS}-second script: hook and time-coded clips..."
+                    if not custom_script else "Splitting your script into clips and planning the visuals...")
     try:
-        plan = await studio.plan_video(brief, custom_script=custom_script)
+        plan = await studio.plan_video(brief, custom_script=custom_script, seconds=seconds)
     except Exception as e:
         return {"reply": f"I couldn't plan the video, Master Ashok: {e}", "author": "Alfred"}
     job = await studio.start_video_job(plan)
@@ -634,7 +653,7 @@ async def _studio_image(request: str, aspect: Optional[str] = None, exact_prompt
     except Exception as e:
         return {"reply": f"I couldn't create the image, Master Ashok: {e}", "author": "Alfred"}
     return {"reply": f"Here's your image ({img['aspect']}).", "author": "Alfred", "action": "image",
-            "image_url": img["url"], "prompt": img["prompt"]}
+            "image_url": img["url"], "prompt": img["prompt"], "usage": img.get("usage")}
 
 
 async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], last_news_id: Optional[str]) -> Dict[str, Any]:
@@ -657,6 +676,9 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     # The AI router decides the action from his actual words (G-Intelligence mode always means Google).
     if req.mode == "custom_video":
         return await _studio_video(req.message, custom_script=True)
+    if req.mode == "video_plan":
+        return await _studio_video(req.video_brief or req.message, news_id=req.news_id,
+                                   seconds=req.video_seconds or studio.DEFAULT_SECONDS)
     if req.mode == "custom_image":
         return await _studio_image(req.message, req.aspect, exact_prompt=True)
     route = {"intent": "google"} if req.mode == "google" else await _route_intent(req.message, history)
@@ -790,8 +812,10 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             t = items[story - 1]
             brief = (f"News story: {t.title}\nSummary: {t.summary}\nKey points: {'; '.join(t.key_bullet_points or [])}\n"
                      f"Why it matters: {t.why_it_matters}\nHis request: {req.message}")
-            return await _studio_video(brief, news_id=t.id)
-        return await _studio_video(req.message)
+            seconds = _seconds_in(req.message)
+            return await _studio_video(brief, news_id=t.id, seconds=seconds) if seconds else _ask_video_length(brief, t.id)
+        seconds = _seconds_in(req.message)
+        return await _studio_video(req.message, seconds=seconds) if seconds else _ask_video_length(req.message)
 
     if intent == "image":
         return await _studio_image(req.message, req.aspect)

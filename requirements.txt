@@ -29,5 +29,6 @@ pillow>=10.0.0
 schedule>=1.2.0
 numpy>=1.26.0
 imageio-ffmpeg>=0.4.9
+opencv-python-headless>=4.9.0,<5  # 5.x dropped CascadeClassifier
 instagrapi>=3.0.0
 

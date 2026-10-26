@@ -4,7 +4,7 @@ Final frame (1080x1920):
   top 65%     : content video (Wan 2.6 Flash / Omni Flash image-to-video, or a free FFmpeg zoom/pan)
   bottom 35%  : his HeyGen avatar clone (one continuous take; his voice is the video's audio)
   split line  : the two parts overlap by BLEND px and cross-fade, so there is no hard edge
-  subtitles   : short 2-4 word captions just above the clone (white bold, black outline, key word in yellow)
+  subtitles   : short 2-4 word captions just above the clone (white bold, thin black outline, key word in yellow, no box)
   edges       : a soft fade to deep black at the very top and bottom
 """
 
@@ -29,10 +29,15 @@ BOTTOM_RATIO = 0.35    # his clone takes the bottom 35% of the frame
 PART_H = 1040          # working height for free zoom/pan clips (re-scaled by compose)
 
 FONT_PATHS = ["C:/Windows/Fonts/seguibl.ttf", "C:/Windows/Fonts/ariblk.ttf", "C:/Windows/Fonts/arialbd.ttf"]
-CAPTION_SIZE = 64
+CAPTION_SIZE = 54                        # 15% smaller than the old 64
 CAPTION_TEXT = (255, 255, 255, 255)
 CAPTION_ACCENT = (255, 200, 61, 255)     # warm yellow: the key word of each caption
-CAPTION_STROKE = 6                       # black outline around each letter (no background box)
+CAPTION_STROKE = 5                       # thin black outline around each letter only (no box, no shadow)
+AVATAR_SPEED = 1.10                      # HeyGen voice speed: he talks 10% faster (sent as voice_settings.speed)
+HEAD_MOTION_KEEP = 0.10                  # keep 10% of his quick head nods (0 = none, 1 = untouched)
+STEADY_HEAD = False                      # off: HeyGen's own head motion looks more natural than steadying it
+FACE_SHARE = 0.34                        # his face fills ~34% of the clone strip's height (head + shoulders)
+HEAD_GAP = 30                            # px between the top of his hair and the end of the top cross-fade
 STOPWORDS = {"a", "an", "the", "this", "that", "these", "those", "is", "are", "was", "were", "be", "to", "of",
              "and", "or", "for", "in", "on", "at", "it", "its", "i", "i'm", "you", "your", "we", "my", "me",
              "with", "so", "but", "can", "will", "just", "here", "what", "how", "now", "hi"}
@@ -156,9 +161,10 @@ def _wan_wavespeed(image: Path, prompt: str, seconds: float, out: Path, resoluti
         if not image_url:
             raise RuntimeError(f"WaveSpeed upload failed {up.status_code}: {up.text[:200]}")
         # 2. Submit the Wan 2.6 Flash job (silent).
+        res_name = "1080p" if resolution.lower().startswith("1080") else "720p"
+        duration = max(2, min(15, int(seconds + 0.999)))
         body = {"prompt": prompt[:1500], "image": image_url, "negative_prompt": NEGATIVE,
-                "resolution": "1080p" if resolution.lower().startswith("1080") else "720p",
-                "duration": max(2, min(15, int(seconds + 0.999))), "shot_type": "single",
+                "resolution": res_name, "duration": duration, "shot_type": "single",
                 "enable_prompt_expansion": True, "generate_audio": False, "seed": -1}
         r = client.post(f"{WAVESPEED}/alibaba/wan-2.6/image-to-video-flash", headers=auth, json=body)
         data = r.json()
@@ -180,6 +186,9 @@ def _wan_wavespeed(image: Path, prompt: str, seconds: float, out: Path, resoluti
                 if not url:
                     raise RuntimeError(f"WaveSpeed finished without a video URL: {str(res)[:200]}")
                 out.write_bytes(client.get(url, follow_redirects=True).content)  # links expire: save now
+                from src import costs
+                costs.record("WaveSpeed", f"Video clip · Wan 2.6 Flash {res_name}, {duration}s",
+                             costs.WAN_PER_SEC.get(res_name, 0.025) * duration)
                 return out
             if status in ("failed", "cancelled", "timeout", "deleted"):
                 raise RuntimeError(f"WaveSpeed job {status}: {res.get('error') or ''}"[:300])
@@ -251,6 +260,162 @@ def omni_clip(image: Path, prompt: str, out: Path, resolution: str = "720p") -> 
     return out
 
 
+# ----------------------------------------------------------------------------- avatar polish
+def _subpixel(res, px: int, py: int) -> Tuple[float, float]:
+    """Parabolic refinement of a template-match peak, so the tracked path has no 1 px jitter."""
+    def fit(a, b, c):
+        d = a - 2 * b + c
+        return 0.0 if abs(d) < 1e-9 else 0.5 * (a - c) / d
+    h, w = res.shape
+    dx = fit(res[py, px - 1], res[py, px], res[py, px + 1]) if 0 < px < w - 1 else 0.0
+    dy = fit(res[py - 1, px], res[py, px], res[py + 1, px]) if 0 < py < h - 1 else 0.0
+    return px + dx, py + dy
+
+
+def _gauss_smooth(path, sigma: float):
+    import numpy as np
+    r = int(3 * sigma)
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+    k /= k.sum()
+    padded = np.pad(path, ((r, r), (0, 0)), mode="edge")
+    return np.stack([np.convolve(padded[:, j], k, mode="valid") for j in range(path.shape[1])], axis=1)
+
+
+def polish_avatar(src: Path, out: Path, speed: float = AVATAR_SPEED, keep: float = HEAD_MOTION_KEEP) -> Path:
+    """His HeyGen take, sped up, with quick repeated head nods smoothed out and the body left untouched.
+
+    Head: the eyes/brow are tracked frame by frame (sub-pixel template match, not the mouth). The target path
+    is that track smoothed over ~0.5 s, so one slow head move survives but quick back-and-forth nods don't.
+    Only the head and neck are moved onto that path: the correction fades out over the neck and upper chest,
+    so the shoulders, body and background stay exactly where HeyGen put them (no body shake).
+    Speed: video (setpts) and voice (atempo, pitch kept) are sped up together, so the lips stay in sync."""
+    import cv2
+    import numpy as np
+
+    cap = cv2.VideoCapture(str(src))
+    fps = cap.get(cv2.CAP_PROP_FPS) or FPS
+    frames = []
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frames.append(frame)
+    cap.release()
+    if not frames:
+        raise RuntimeError(f"Could not read the avatar take {src}")
+    h, w = frames[0].shape[:2]
+    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    faces = cascade.detectMultiScale(grays[0], 1.1, 5, minSize=(h // 10, h // 10))
+    if len(faces):
+        fx, fy, fw, fh = (int(v) for v in max(faces, key=lambda r: r[2] * r[3]))
+    else:  # no face found: assume a centred head in the upper middle
+        fw = fh = h // 4
+        fx, fy = (w - fw) // 2, h // 5
+    tx, ty, tw, th = fx + fw // 8, fy + fh // 6, fw * 3 // 4, fh // 2  # eyes + brow: moves with the head, not the jaw
+    template = grays[0][ty:ty + th, tx:tx + tw]
+    m = max(fh // 3, 40)  # search window around the start position
+    sx0, sy0 = max(0, tx - m), max(0, ty - m)
+    sx1, sy1 = min(w, tx + tw + m), min(h, ty + th + m)
+
+    pos = []
+    for g in grays:
+        res = cv2.matchTemplate(g[sy0:sy1, sx0:sx1], template, cv2.TM_CCOEFF_NORMED)
+        _, score, _, (px, py) = cv2.minMaxLoc(res)
+        if score > 0.5:
+            qx, qy = _subpixel(res, px, py)
+            pos.append((sx0 + qx - tx, sy0 + qy - ty))
+        else:
+            pos.append(pos[-1] if pos else (0.0, 0.0))
+    path = np.array(pos, dtype=np.float64)
+    target = _gauss_smooth(path, sigma=fps * 0.5)            # quick nods (< ~1 s) are averaged away
+    corr = (target - path) * (1 - keep)
+    corr = np.clip(corr, -0.1 * fh, 0.1 * fh)                # never pull the head further than 10% of its size
+    corr = _gauss_smooth(corr, sigma=1.0)                     # no frame-to-frame jitter in the correction
+
+    # Weight map: 1 on the head, fading smoothly to 0 over the neck/upper chest and into the background.
+    cx, cy = fx + fw / 2, fy + fh / 2
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    def ramp(v, a, b):  # 1 at <= a, 0 at >= b, smoothstep between
+        t = np.clip((v - a) / (b - a), 0, 1)
+        return 1 - t * t * (3 - 2 * t)
+    weight = (ramp(np.abs(xx - cx), 0.75 * fw, 1.6 * fw) *
+              ramp(yy, fy + fh * 1.05, fy + fh * 2.1) *       # chin -> upper chest: body below stays put
+              ramp(cy - yy, 0.9 * fh, 1.6 * fh)).astype(np.float32)
+
+    proc = subprocess.Popen(
+        [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps:.6f}", "-i", "-",
+         "-i", str(src), *(["-filter_complex", f"[0:v]setpts=PTS/{speed}[v];[1:a]atempo={speed}[a]",
+                            "-map", "[v]", "-map", "[a]?"] if speed != 1.0 else
+                           ["-map", "0:v", "-map", "1:a?"]), "-r", f"{fps:.6f}", "-c:v", "libx264", "-preset", "medium", "-crf", "16",
+         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", str(out)],
+        stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    for frame, (dx, dy) in zip(frames, corr):
+        if abs(dx) < 0.05 and abs(dy) < 0.05:
+            proc.stdin.write(frame.tobytes())
+            continue
+        moved = cv2.remap(frame, xx - weight * np.float32(dx), yy - weight * np.float32(dy),
+                          cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        proc.stdin.write(moved.tobytes())
+    proc.stdin.close()
+    err = proc.stderr.read().decode(errors="ignore")
+    if proc.wait() != 0:
+        raise RuntimeError(f"FFmpeg failed polishing the avatar: {err.strip()[-600:]}")
+    shake = np.abs(path - target).max(axis=0)
+    logger.info(f"Avatar polished: {speed}x speed, quick head nods {shake.max():.1f}px -> "
+                f"{(np.abs(path + corr - target)).max():.1f}px, body untouched")
+    return out
+
+
+# ----------------------------------------------------------------------------- clone framing
+def _face_box(video: Path) -> Optional[Tuple[float, float, float, float]]:
+    """Median face box (x, y, w, h) over a few frames of his take, or None if no face is found."""
+    import cv2
+    import numpy as np
+    cap = cv2.VideoCapture(str(video))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    boxes = []
+    for k in range(8):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(total * k / 8))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(gray.shape[0] // 10,) * 2)
+        if len(faces):
+            boxes.append(max(faces, key=lambda r: r[2] * r[3]))
+    cap.release()
+    return tuple(float(v) for v in np.median(np.array(boxes), axis=0)) if boxes else None
+
+
+def _clone_filter(avatar: Path, bot_h: int) -> str:
+    """Scale/pad/crop for the clone strip: his face centred left-right, zoomed to head + shoulders,
+    and his hair kept below the top cross-fade (extra headroom is filled by smearing the wall upward)."""
+    import cv2
+    cap = cv2.VideoCapture(str(avatar))
+    sw, sh = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    face = _face_box(avatar)
+    if not face or not sw or not sh:  # no face found: fill the strip, centred
+        return (f"scale={W}:{bot_h}:force_original_aspect_ratio=increase,"
+                f"crop={W}:{bot_h}:(iw-{W})/2:(ih-{bot_h})*0.15")
+    fx, fy, fw, fh = face
+    scale = max(FACE_SHARE * bot_h / fh, W / sw, bot_h / sh)   # zoom in, but always fill the strip
+    w, h = int(round(sw * scale / 2)) * 2, int(round(sh * scale / 2)) * 2
+    head_top = (fy - 0.35 * fh) * scale                        # top of the hair, in scaled pixels
+    want = BLEND + HEAD_GAP                                     # where the hair should sit in the strip
+    pad = max(0, int(round(want - head_top)) // 2 * 2)          # headroom the take doesn't have
+    crop_y = max(0, min(h + pad - bot_h, int(round(head_top + pad - want))))
+    crop_x = max(0, min(w - W, int(round((fx + fw / 2) * scale - W / 2))))  # face in the middle
+    chain = f"scale={w}:{h}"
+    if pad:
+        chain += f",pad={w}:{h + pad}:0:{pad},fillborders=top={pad}:mode=smear"
+    return chain + f",crop={W}:{bot_h}:{crop_x}:{crop_y}"
+
+
 # ----------------------------------------------------------------------------- subtitles
 def _font(size: int) -> ImageFont.FreeTypeFont:
     for f in FONT_PATHS:
@@ -306,9 +471,8 @@ def caption_timeline(script: str, media: Path) -> List[Tuple[float, float, str]]
 
 
 def render_caption(text: str, path: Path) -> Path:
-    """One caption as a transparent PNG, no box: white bold words (key word in yellow) with a thick
-    black outline and a soft drop shadow, so they read on any video background."""
-    from PIL import ImageFilter
+    """One caption as a transparent PNG: white bold words (key word in yellow) with a thin black outline
+    only. No box and no blurred shadow (the shadow read as a dark band behind the text)."""
     font = _font(CAPTION_SIZE)
     words = text.split()
     plain = [re.sub(r"[^\w']", "", w).lower() for w in words]
@@ -321,14 +485,7 @@ def render_caption(text: str, path: Path) -> Path:
     pad = CAPTION_STROKE + 16
     size = (int(text_w + 2 * pad), ascent + descent + 2 * pad)
 
-    shadow = Image.new("RGBA", size, (0, 0, 0, 0))  # blurred dark copy, offset down: gives depth
-    sd = ImageDraw.Draw(shadow)
-    x = pad
-    for word, wd in zip(words, widths):
-        sd.text((x + 3, pad + 5), word, font=font, fill=(0, 0, 0, 200), stroke_width=CAPTION_STROKE, stroke_fill=(0, 0, 0, 200))
-        x += wd + space
-    img = shadow.filter(ImageFilter.GaussianBlur(6))
-
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     x = pad
     for k, (word, wd) in enumerate(zip(words, widths)):
@@ -367,9 +524,8 @@ def compose(top_clips: List[Path], durations: List[float], avatar: Path, out: Pa
     f.append("".join(f"[t{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[topraw]")
     f.append(f"[{itm}:v]format=gray,trim=duration={total:.3f}[mt]")
     f.append("[topraw]format=rgba[topa];[topa][mt]alphamerge[top]")
-    # Clone: fill the bottom part, cropped around his face (head kept clear of the top edge).
-    f.append(f"[{ia}:v]scale={W}:{bot_h}:force_original_aspect_ratio=increase,"
-             f"crop={W}:{bot_h}:(iw-{W})/2:(ih-{bot_h})*0.15,setsar=1,fps={FPS},format=rgba[bot0]")
+    # Clone: his face centred, head + shoulders, hair clear of the cross-fade (see _clone_filter).
+    f.append(f"[{ia}:v]{_clone_filter(avatar, bot_h)},setsar=1,fps={FPS},format=rgba[bot0]")
     f.append(f"[{ibm}:v]format=gray,vflip,trim=duration={total:.3f}[mb]")
     f.append("[bot0][mb]alphamerge[bot]")
     f.append(f"color=c=black:s={W}x{H}:r={FPS}:d={total:.3f},format=rgba[bg]")
