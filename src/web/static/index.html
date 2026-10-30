@@ -16,7 +16,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alfred" />
-  <link rel="stylesheet" href="styles.css?v=21" />
+  <link rel="stylesheet" href="styles.css?v=22" />
 </head>
 <body class="alfred-theme">
 
@@ -182,23 +182,9 @@
           <h3>Custom Script</h3>
           <button type="button" class="close-drawer-btn" id="script-close">✕</button>
         </div>
-        <div class="script-kind" role="tablist">
-          <button type="button" class="script-kind-btn active" data-kind="video">Video (9:16 · HeyGen)</button>
-          <button type="button" class="script-kind-btn" data-kind="image">Image</button>
-        </div>
-        <div class="script-heygen" id="script-heygen">Checking HeyGen...</div>
-        <textarea id="script-text" rows="8" placeholder="Write exactly what you will say. Alfred keeps your words, splits them into clips and adds the visuals."></textarea>
+        <textarea id="script-text" rows="8" placeholder="Write your script or idea. Alfred then asks: image or video (clone or normal), and the length."></textarea>
         <div class="script-length hidden" id="script-length"></div>
-        <div class="script-aspect hidden" id="script-aspect">
-          <span>Ratio</span>
-          <select id="script-aspect-select">
-            <option value="4:5">4:5 post</option>
-            <option value="1:1">1:1 square</option>
-            <option value="9:16">9:16 story</option>
-            <option value="16:9">16:9 wide</option>
-          </select>
-        </div>
-        <button type="button" class="msg-action-btn primary script-go" id="script-go">Generate video</button>
+        <button type="button" class="msg-action-btn primary script-go" id="script-go">Send to Alfred</button>
       </div>
     </div>
 
@@ -213,7 +199,7 @@
     <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   </div>
 
-  <script src="app.js?v=22"></script>
+  <script src="app.js?v=23"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW registration failed:", e));

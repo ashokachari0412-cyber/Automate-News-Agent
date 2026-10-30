@@ -181,49 +181,20 @@
     });
   }
 
-  // Custom Script: his own words become a HeyGen video (kept verbatim) or an image prompt.
+  // Custom Script: he writes, sends it to the chat, and Alfred asks image or video (clone / normal) + length.
   function setupScriptPanel() {
     const panel = document.getElementById("script-panel");
     const text = document.getElementById("script-text");
     const go = document.getElementById("script-go");
-    const aspectRow = document.getElementById("script-aspect");
-    let kind = "video";
     const lengthLine = document.getElementById("script-length");
-    // His words are kept as written, so the video is as long as the script: show that while he types.
     const updateLength = () => {
       const words = text.value.trim() ? text.value.trim().split(/\s+/).length : 0;
-      lengthLine.classList.toggle("hidden", kind !== "video" || !words);
-      lengthLine.textContent = `About ${Math.max(1, Math.round(words / WORDS_PER_SECOND))} s of video · ${words} words`;
+      lengthLine.classList.toggle("hidden", !words);
+      lengthLine.textContent = `${words} words · about ${Math.max(1, Math.round(words / WORDS_PER_SECOND))} s if spoken as written`;
     };
     text.addEventListener("input", updateLength);
-    const setKind = (k) => {
-      kind = k;
-      panel.querySelectorAll(".script-kind-btn").forEach((b) => b.classList.toggle("active", b.dataset.kind === k));
-      aspectRow.classList.toggle("hidden", k !== "image");
-      updateLength();
-      document.getElementById("script-heygen").classList.toggle("hidden", k !== "video");
-      go.textContent = k === "video" ? "Generate video" : "Generate image";
-      text.placeholder = k === "video"
-        ? "Write exactly what you will say. Alfred keeps your words, splits them into clips and adds the visuals."
-        : "Describe the image: subject, setting, style, colours, any text you want on it.";
-    };
-    panel.querySelectorAll(".script-kind-btn").forEach((b) => b.addEventListener("click", () => setKind(b.dataset.kind)));
     const close = () => panel.classList.add("hidden");
-    const heygenLine = document.getElementById("script-heygen");
-    const showHeygen = async () => {
-      heygenLine.className = "script-heygen";
-      heygenLine.textContent = "Checking HeyGen...";
-      try {
-        const h = await (await fetch("/api/v1/studio/heygen")).json();
-        heygenLine.classList.add(h.ready ? "ok" : "bad");
-        heygenLine.textContent = h.ready
-          ? `HeyGen ready · ${h.avatar_name || "your avatar"}${h.credits != null ? ` · ${h.credits} credits` : ""}`
-          : `HeyGen not ready: ${h.reason}`;
-      } catch (e) {
-        heygenLine.textContent = "Couldn't check HeyGen right now.";
-      }
-    };
-    customScriptBtn.addEventListener("click", () => { panel.classList.remove("hidden"); text.focus(); showHeygen(); });
+    customScriptBtn.addEventListener("click", () => { panel.classList.remove("hidden"); text.focus(); });
     document.getElementById("script-close").addEventListener("click", close);
     panel.addEventListener("click", (e) => { if (e.target === panel) close(); });
     go.addEventListener("click", () => {
@@ -232,9 +203,7 @@
       close();
       text.value = "";
       updateLength();
-      const aspect = document.getElementById("script-aspect-select").value;
-      if (kind === "video") sendPrompt(script, "Planning clips from your script...", "custom_video");
-      else sendPrompt(script, "Creating your image...", "custom_image", { aspect });
+      sendPrompt(script, "Reading your script...", "custom_script", { script });
     });
   }
 
@@ -242,7 +211,7 @@
     historyBtn.addEventListener("click", () => {
       historyDrawer.classList.remove("hidden");
       drawerBackdrop.classList.remove("hidden");
-      loadSessions(closeDrawer);
+      loadSessions(closeDrawer).then(addScheduledSection);
     });
 
     function closeDrawer() {
@@ -252,6 +221,43 @@
 
     closeHistoryBtn.addEventListener("click", closeDrawer);
     drawerBackdrop.addEventListener("click", closeDrawer);
+  }
+
+  // Top of the History drawer: upcoming scheduled posts (with Cancel) and the last few that ran.
+  const SCHEDULE_STATUS = { scheduled: "Scheduled", posting: "Posting now", posted: "Posted", partial: "Partly posted",
+    failed: "Failed", missed: "Missed", cancelled: "Cancelled" };
+  async function addScheduledSection() {
+    let items = [];
+    try {
+      items = (await (await fetch("/api/v1/schedule")).json()).items || [];
+    } catch (e) { return; }
+    items = items.filter((e) => e.status !== "cancelled").slice(0, 8);
+    if (!items.length) return;
+    const sec = document.createElement("div");
+    sec.className = "scheduled-section";
+    sec.innerHTML = `<div class="digest-section-title">Scheduled posts</div>`;
+    items.forEach((e) => {
+      const row = document.createElement("div");
+      row.className = "history-item-row scheduled-row";
+      row.innerHTML = `<span class="hist-title"></span><span class="hist-meta"></span>`;
+      row.querySelector(".hist-title").textContent = `${e.kind === "video" ? "🎬" : "🖼"} ${e.title}`;
+      row.querySelector(".hist-meta").textContent =
+        `${SCHEDULE_STATUS[e.status] || e.status} · ${fmtWhen(e.run_at_ts)} · ${e.platforms.join(", ")}` +
+        (e.error ? ` · ${e.error}` : "");
+      if (e.status === "scheduled") {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "link-btn";
+        cancel.textContent = "Cancel";
+        cancel.addEventListener("click", async () => {
+          const r = await fetch(`/api/v1/schedule/${e.id}`, { method: "DELETE" });
+          if (r.ok) row.remove();
+        });
+        row.appendChild(cancel);
+      }
+      sec.appendChild(row);
+    });
+    historyContent.prepend(sec);
   }
 
   // History = the last 15 chat sessions (saved each time "New chat" is pressed)
@@ -568,7 +574,7 @@
         captionInput.addEventListener("input", () => { saveBtn.textContent = "Save caption"; });
         actions.appendChild(saveBtn);
         actions.appendChild(makeButton("Copy caption", false, async (btn) => {
-          await navigator.clipboard.writeText(captionInput.value);
+          await copyText(captionInput.value);
           btn.textContent = "Copied";
         }));
       }
@@ -626,10 +632,18 @@
         }
       });
 
+      const scheduler = buildScheduler((st) => {
+        const selected = [...picker.querySelectorAll("input:checked")].map((c) => c.value);
+        if (!selected.length) { st.textContent = "Select at least one platform."; return null; }
+        return { kind: "carousel", ref: data.news_id, platforms: selected, format: isSingle ? "single" : "carousel",
+                 brand, caption: captionInput ? captionInput.value : null, ...musicPicker.selection() };
+      });
       actions.appendChild(picker);
       actions.appendChild(publishBtn);
+      actions.appendChild(scheduler.button);
       block.appendChild(musicPicker.el);
       block.appendChild(actions);
+      block.appendChild(scheduler.el);
       block.appendChild(status);
       const postReceipt = renderUsage(data.usage && { ...data.usage, kind: isSingle ? "image" : "post" });
       if (postReceipt) block.appendChild(postReceipt);
@@ -661,7 +675,7 @@
       actions.className = "msg-actions";
       const dl = document.createElement("a");
       dl.className = "msg-action-btn";
-      dl.href = data.image_url;
+      dl.href = downloadUrl(data.image_url);
       dl.download = "alfred-image.png";
       dl.textContent = "Download";
       actions.appendChild(dl);
@@ -669,6 +683,83 @@
       const receipt = renderUsage(data.usage && { ...data.usage, kind: "image" });
       if (receipt) block.appendChild(receipt);
       body.appendChild(block);
+    }
+
+    // Custom Script: Image or Video -> (video) Clone or Normal -> length. Each choice reveals the next row.
+    if (data.action === "script_kind" && data.script) {
+      const wrap = document.createElement("div");
+      wrap.className = "script-steps";
+      const addRow = (title) => {
+        const sec = makeSection(title);
+        wrap.appendChild(sec.el);
+        scrollToBottom();
+        return sec;
+      };
+      const pick = (row, btn) => {
+        row.querySelectorAll(".msg-action-btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+      };
+      let typeSec = null;
+      let lenSec = null;
+      const kind = addRow("Image or video?");
+      kind.row.appendChild(makeButton("🖼 Image", false, (btn) => {
+        if (isGenerating) return;
+        pick(kind.row, btn);
+        sendPrompt("Image", "Writing the image prompt...", "image_prompt", { script: data.script });
+      }));
+      kind.row.appendChild(makeButton("🎬 Video", false, (btn) => {
+        pick(kind.row, btn);
+        if (typeSec) return;
+        typeSec = addRow("Which kind of video?");
+        const types = [["clone", "Clone · you on camera (HeyGen)"], ["normal", "Normal · AI clips only, no HeyGen"]];
+        types.forEach(([type, label]) => {
+          typeSec.row.appendChild(makeButton(label, false, (b) => {
+            pick(typeSec.row, b);
+            if (lenSec) lenSec.el.remove();
+            lenSec = addRow("Video length");
+            const lengths = type === "clone"
+              ? [[0, `Keep my words · ~${data.keep_seconds} s`], ...data.options.map((s) => [s, `${s} s`])]
+              : data.options.map((s) => [s, `${s} s`]);
+            lengths.forEach(([secs, lbl]) => {
+              lenSec.row.appendChild(makeButton(lbl, secs === (type === "clone" ? 0 : 30), (lb) => {
+                if (isGenerating) return;
+                pick(lenSec.row, lb);
+                const name = type === "clone" ? "Clone video" : "Normal video";
+                sendPrompt(`${name} · ${secs ? `${secs} s` : "my words as written"}`,
+                  `Planning the clips for your ${name.toLowerCase()}...`, "custom_video",
+                  { script: data.script, video_type: type, video_seconds: secs });
+              }));
+            });
+          }));
+        });
+      }));
+      body.appendChild(wrap);
+    }
+
+    // Custom Script -> Image: the exact prompt + ratio the image model will get, editable before generating.
+    if (data.action === "image_prompt" && data.prompt) {
+      const wrap = document.createElement("div");
+      wrap.className = "image-prompt-edit";
+      const area = document.createElement("textarea");
+      area.className = "caption-box caption-edit";
+      area.value = data.prompt;
+      area.rows = 5;
+      const row = document.createElement("div");
+      row.className = "msg-actions";
+      const ratio = document.createElement("select");
+      ratio.className = "schedule-input";
+      [["4:5", "4:5 post"], ["1:1", "1:1 square"], ["9:16", "9:16 story"], ["16:9", "16:9 wide"]].forEach(([v, l]) => {
+        ratio.insertAdjacentHTML("beforeend", `<option value="${v}"${v === data.aspect ? " selected" : ""}>${l}</option>`);
+      });
+      row.appendChild(ratio);
+      row.appendChild(makeButton("Generate image", true, () => {
+        const prompt = area.value.trim();
+        if (!prompt || isGenerating) return;
+        sendPrompt("Generate this image", "Creating your image...", "custom_image", { script: prompt, aspect: ratio.value });
+      }));
+      wrap.appendChild(area);
+      wrap.appendChild(row);
+      body.appendChild(wrap);
     }
 
     if (data.action === "video_length" && Array.isArray(data.options)) {
@@ -923,6 +1014,27 @@
     }
   }
 
+  // Download link that also works inside the Android app: the server sends it as an attachment.
+  const downloadUrl = (url) => url + (url.includes("?") ? "&" : "?") + "download=1";
+
+  // Copy that works on http:// too (the Android WebView blocks navigator.clipboard there).
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    }
+  }
+
   // "Modify" under an image: his words + this image go to the image model; the new version replaces it
   // in place (publishing then uses it). `payload` says which image (slide N, single, or studio file).
   function addModifyControl(cell, img, link, payload, onUrl) {
@@ -984,14 +1096,272 @@
   };
   const fmtTime = (s) => `${Math.floor((s || 0) / 60)}:${String(Math.round((s || 0) % 60)).padStart(2, "0")}`;
   let musicAudio = null;
-  function buildMusicPicker() {
+  const fmtWhen = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: "short", day: "numeric", month: "short",
+    hour: "numeric", minute: "2-digit" });
+
+  // "Schedule" next to Publish: pick a date + time; the server posts it then (it must be running at that time).
+  // getRequest(statusEl) returns {kind, ref, platforms, caption, ...} or null after writing why into statusEl.
+  function buildScheduler(getRequest) {
+    const form = document.createElement("div");
+    form.className = "schedule-form hidden";
+    const local = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    const input = document.createElement("input");
+    input.type = "datetime-local";
+    input.className = "schedule-input";
+    const status = document.createElement("div");
+    status.className = "publish-status";
+    const button = makeButton("🗓 Schedule", false, () => {
+      if (form.classList.contains("hidden")) {
+        const soon = new Date(Date.now() + 3600000);
+        soon.setMinutes(0, 0, 0);
+        input.min = local(new Date());
+        if (!input.value) input.value = local(soon);
+      }
+      form.classList.toggle("hidden");
+      scrollToBottom();
+    });
+    const showScheduled = (entry) => {
+      status.innerHTML = `🗓 Scheduled for <b>${escapeHtml(fmtWhen(entry.run_at_ts))}</b> · ${escapeHtml(entry.platforms.join(", "))} `;
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "link-btn";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", async () => {
+        const r = await fetch(`/api/v1/schedule/${entry.id}`, { method: "DELETE" });
+        status.textContent = r.ok ? "Schedule cancelled." : `Couldn't cancel: ${((await r.json()).detail) || r.status}`;
+      });
+      status.appendChild(cancel);
+    };
+    const row = document.createElement("div");
+    row.className = "msg-actions";
+    row.appendChild(input);
+    row.appendChild(makeButton("Confirm schedule", true, async (btn) => {
+      const req = getRequest(status);
+      if (!req) return;
+      if (!input.value) { status.textContent = "Pick a date and time."; return; }
+      btn.disabled = true;
+      try {
+        const res = await fetch("/api/v1/schedule", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...req, run_at: new Date(input.value).toISOString() }),
+        });
+        const out = await res.json();
+        if (!res.ok) throw new Error(out.detail || res.status);
+        form.classList.add("hidden");
+        showScheduled(out);
+      } catch (e) {
+        status.textContent = `Couldn't schedule: ${e.message}`;
+      } finally {
+        btn.disabled = false;
+      }
+    }));
+    form.appendChild(row);
+    form.insertAdjacentHTML("beforeend",
+      `<div class="schedule-note">Alfred posts it at that time, so keep your PC and Alfred's server running.</div>`);
+    const el = document.createElement("div");
+    el.appendChild(form);
+    el.appendChild(status);
+    return { button, el };
+  }
+
+  // Before Render: every clip editable. Clone: what he says + what the top half shows. Normal: what's shown,
+  // the motion, the text on screen and the clip length. The times update while he types.
+  function buildPlanEditor(jobId, onSaved) {
+    const el = document.createElement("div");
+    el.className = "plan-editor";
+    el.textContent = "Loading the clips…";
+    const fmt = (t) => `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+    fetch(`/api/v1/studio/jobs/${jobId}/plan`).then((r) => r.json()).then(({ plan }) => {
+      if (!plan) { el.textContent = "Couldn't load the plan."; return; }
+      el.textContent = "";
+      const normal = plan.type === "normal";
+      const scenes = plan.scenes.map((s) => ({ ...s }));
+      const durOf = (s) => (normal ? Math.max(2, Math.min(15, Math.round(+s.seconds || 5)))
+        : Math.max(2, (s.spoken || "").trim().split(/\s+/).filter(Boolean).length / WORDS_PER_SECOND));
+      const list = document.createElement("div");
+      const totalLine = document.createElement("div");
+      totalLine.className = "plan-total";
+      const refreshTimes = () => {
+        let t = 0;
+        list.querySelectorAll(".plan-clip").forEach((card, i) => {
+          const d = durOf(scenes[i]);
+          card.querySelector(".plan-clip-time").textContent = `Clip ${i + 1} · ${fmt(t)}-${fmt(t + d)}`;
+          t += d;
+        });
+        totalLine.textContent = `Total about ${Math.round(t)} s${normal ? "" : " (final timings follow your real voice)"}`;
+      };
+      const field = (label, value, rows, onInput) => {
+        const wrap = document.createElement("label");
+        wrap.className = "plan-field";
+        wrap.innerHTML = `<span>${escapeHtml(label)}</span>`;
+        const area = document.createElement("textarea");
+        area.rows = rows;
+        area.value = value || "";
+        area.addEventListener("input", () => { onInput(area.value); refreshTimes(); });
+        wrap.appendChild(area);
+        return wrap;
+      };
+      const render = () => {
+        list.innerHTML = "";
+        scenes.forEach((s, i) => {
+          const card = document.createElement("div");
+          card.className = "plan-clip";
+          const head = document.createElement("div");
+          head.className = "plan-clip-head";
+          head.innerHTML = `<span class="plan-clip-time"></span>`;
+          if (scenes.length > 1) {
+            const del = document.createElement("button");
+            del.type = "button";
+            del.className = "link-btn";
+            del.textContent = "Remove";
+            del.addEventListener("click", () => { scenes.splice(i, 1); render(); });
+            head.appendChild(del);
+          }
+          card.appendChild(head);
+          if (!normal) card.appendChild(field("Says", s.spoken, 2, (v) => { s.spoken = v; }));
+          card.appendChild(field(normal ? "Shows (image prompt)" : "Top half shows (image prompt)", s.visual, 3,
+            (v) => { s.visual = v; }));
+          card.appendChild(field("Motion", s.motion, 2, (v) => { s.motion = v; }));
+          if (normal) {
+            card.appendChild(field("Text on screen", s.caption, 1, (v) => { s.caption = v; }));
+            const len = document.createElement("label");
+            len.className = "plan-field plan-seconds";
+            len.innerHTML = `<span>Clip length</span>`;
+            const sel = document.createElement("select");
+            sel.className = "schedule-input";
+            for (let k = 2; k <= 15; k++) {
+              sel.insertAdjacentHTML("beforeend", `<option value="${k}"${k === durOf(s) ? " selected" : ""}>${k} s</option>`);
+            }
+            sel.addEventListener("change", () => { s.seconds = +sel.value; refreshTimes(); });
+            len.appendChild(sel);
+            card.appendChild(len);
+          }
+          list.appendChild(card);
+        });
+        refreshTimes();
+      };
+      const status = document.createElement("div");
+      status.className = "publish-status";
+      const actions = document.createElement("div");
+      actions.className = "msg-actions";
+      actions.appendChild(makeButton("+ Add clip", false, () => {
+        scenes.push(normal ? { caption: "", visual: "", motion: "", seconds: 5 } : { spoken: "", visual: "", motion: "" });
+        render();
+      }));
+      actions.appendChild(makeButton("Save changes", true, async (btn) => {
+        btn.disabled = true;
+        status.textContent = "";
+        try {
+          const res = await fetch(`/api/v1/studio/jobs/${jobId}/plan`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scenes }),
+          });
+          const out = await res.json();
+          if (!res.ok) throw new Error(out.detail || res.status);
+          onSaved(out);
+          el.remove();
+        } catch (e) {
+          status.textContent = `Couldn't save: ${e.message}`;
+          btn.disabled = false;
+        }
+      }));
+      actions.appendChild(makeButton("Close", false, () => el.remove()));
+      render();
+      el.appendChild(list);
+      el.appendChild(totalLine);
+      el.appendChild(actions);
+      el.appendChild(status);
+      scrollToBottom();
+    }).catch(() => { el.textContent = "Couldn't load the plan."; });
+    return el;
+  }
+
+  // Clone videos: hear the cloned voice before paying for the video. Each clip can be redone on its own;
+  // Render then makes HeyGen lip-sync to exactly this audio. onState(ready, failed) unlocks Render.
+  function buildVoicePreview(jobId, voice, onState, getVoiceId = () => null) {
+    const el = document.createElement("div");
+    el.className = "voice-preview";
+    const status = document.createElement("div");
+    status.className = "publish-status";
+    const render = (v) => {
+      el.innerHTML = "";
+      if (!v) {
+        el.innerHTML = `<div class="format-choice-title">Listen to your voice first</div>`;
+        const row = document.createElement("div");
+        row.className = "msg-actions";
+        row.appendChild(makeButton("🎙 Make voice preview", true, (btn) => run(null, btn)));
+        el.appendChild(row);
+        el.appendChild(status);
+        onState(false, false);
+        return;
+      }
+      el.innerHTML = `<div class="format-choice-title">Your voice · ${v.duration} s · this exact audio goes to HeyGen</div>`;
+      const full = document.createElement("audio");
+      full.controls = true;
+      full.preload = "none";
+      full.src = v.url;
+      full.className = "voice-audio";
+      el.appendChild(full);
+      v.clips.forEach((c, i) => {
+        const row = document.createElement("div");
+        row.className = "voice-clip";
+        row.innerHTML = `<div class="voice-clip-text"><b>Clip ${i + 1}</b> · ${escapeHtml(c.text)}</div>`;
+        const a = document.createElement("audio");
+        a.controls = true;
+        a.preload = "none";
+        a.src = c.url;
+        a.className = "voice-audio small";
+        row.appendChild(a);
+        row.appendChild(makeButton("↻ Redo", false, (btn) => run(i + 1, btn)));
+        el.appendChild(row);
+      });
+      const row = document.createElement("div");
+      row.className = "msg-actions";
+      row.appendChild(makeButton("↻ Redo all", false, (btn) => run(null, btn)));
+      el.appendChild(row);
+      el.appendChild(status);
+      onState(true, false);
+    };
+    const run = async (clip, btn) => {
+      btn.disabled = true;
+      btn.textContent = clip ? "Redoing…" : "Making your voice…";
+      status.textContent = "";
+      try {
+        const q = new URLSearchParams();
+        if (clip) q.set("clip", clip);
+        if (getVoiceId()) q.set("voice_id", getVoiceId());
+        const res = await fetch(`/api/v1/studio/jobs/${jobId}/voice?${q}`, { method: "POST" });
+        const out = await res.json();
+        if (!res.ok) throw new Error(out.detail || res.status);
+        render(out.voice);
+        status.textContent = clip ? `Clip ${clip} redone. Play it to check.` : "";
+        onState(true, false, out.estimate);
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = clip ? "↻ Redo" : "🎙 Make voice preview";
+        status.textContent = `Voice preview failed: ${e.message}. You can still render the old way (HeyGen makes the voice).`;
+        onState(false, true);
+      }
+    };
+    render(voice);
+    return { el, reset: () => render(null) };
+  }
+
+  function estimateLine(est) {
+    if (est.type === "normal") return `Ready to render · about $${est.total_usd ?? "?"} (images + video clips, no HeyGen)`;
+    return `Ready to render · about $${est.total_usd ?? "?"} (HeyGen $${est.heygen_usd ?? "?"} + top half $${est.content_usd ?? "?"})`;
+  }
+
+  function buildMusicPicker(sources = Object.keys(MUSIC_TABS)) {
     const el = document.createElement("div");
     el.className = "music-picker";
     el.innerHTML = `<div class="msg-actions"><button type="button" class="msg-action-btn music-toggle">🎵 Background music</button>
         <span class="music-chosen"></span></div>
       <div class="music-panel hidden">
-        <div class="music-tabs">${Object.entries(MUSIC_TABS).map(([k, t]) =>
-          `<button type="button" data-src="${k}">${t.label}</button>`).join("")}</div>
+        <div class="music-tabs">${sources.map((k) =>
+          `<button type="button" data-src="${k}">${MUSIC_TABS[k].label}</button>`).join("")}</div>
         <div class="music-note"></div>
         <div class="music-list"></div>
       </div>`;
@@ -1000,7 +1370,7 @@
     const chosen = el.querySelector(".music-chosen");
     const picks = { instagram: null, royalty_free: null };
     const cache = {};
-    let tab = "instagram";
+    let tab = sources[0];
     musicAudio = musicAudio || new Audio();
     const stop = () => { musicAudio.pause(); el.querySelectorAll(".music-play.playing").forEach((b) => { b.classList.remove("playing"); b.textContent = "▶"; }); };
     const showChosen = () => {
@@ -1091,6 +1461,59 @@
     return { el, selected: () => selected };
   }
 
+  // His HeyGen voices, shown under the avatars before Render: tap to pick, ▶ to hear HeyGen's sample.
+  function buildVoicePicker(onChange, initialId = null) {
+    const el = document.createElement("div");
+    el.className = "avatar-picker voice-picker";
+    el.innerHTML = `<div class="avatar-picker-label">Loading your voices…</div><div class="voice-strip"></div>`;
+    const label = el.querySelector(".avatar-picker-label");
+    const strip = el.querySelector(".voice-strip");
+    let selected = null;
+    const player = new Audio();
+    fetch("/api/v1/studio/voices").then((r) => r.json()).then(({ voices = [] }) => {
+      if (!voices.length) { el.remove(); return; }
+      const current = voices.find((v) => v.id === initialId) || voices.find((v) => v.current) || voices[0];
+      selected = current.id;
+      label.textContent = `Voice: ${current.name}`;
+      [current, ...voices.filter((v) => v !== current)].forEach((v) => {
+        const chip = document.createElement("div");
+        chip.className = "voice-chip" + (v.id === selected ? " selected" : "");
+        chip.title = v.name;
+        chip.innerHTML = `<span class="voice-name"></span>`;
+        chip.querySelector(".voice-name").textContent = v.name;
+        if (v.preview) {
+          const play = document.createElement("button");
+          play.type = "button";
+          play.className = "music-play";
+          play.textContent = "▶";
+          play.setAttribute("aria-label", `Hear ${v.name}`);
+          play.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const playing = play.classList.contains("playing");
+            player.pause();
+            strip.querySelectorAll(".music-play.playing").forEach((b) => { b.classList.remove("playing"); b.textContent = "▶"; });
+            if (playing) return;
+            player.src = v.preview;
+            player.play().catch(() => { play.textContent = "✕"; });
+            player.onended = () => { play.classList.remove("playing"); play.textContent = "▶"; };
+            play.classList.add("playing");
+            play.textContent = "❚❚";
+          });
+          chip.prepend(play);
+        }
+        chip.addEventListener("click", () => {
+          if (selected === v.id) return;
+          selected = v.id;
+          strip.querySelectorAll(".voice-chip").forEach((c) => c.classList.toggle("selected", c === chip));
+          label.textContent = `Voice: ${v.name}`;
+          onChange(v.id);
+        });
+        strip.appendChild(chip);
+      });
+    }).catch(() => el.remove());
+    return { el, selected: () => selected };
+  }
+
   // Under a finished video: editable caption + Instagram Reel / LinkedIn / YouTube Short + Publish.
   const VIDEO_PLATFORMS = [["instagram", "Instagram Reel"], ["linkedin", "LinkedIn"], ["youtube", "YouTube Short"]];
   function buildVideoPublish(jobId, job) {
@@ -1155,11 +1578,18 @@
         btn.textContent = "Publish";
       }
     }));
+    const scheduler = buildScheduler((st) => {
+      const selected = [...picker.querySelectorAll("input:checked")].map((c) => c.value);
+      if (!selected.length) { st.textContent = "Select where to post it."; return null; }
+      return { kind: "video", ref: jobId, platforms: selected, caption: caption.value };
+    });
+    actions.appendChild(scheduler.button);
     actions.appendChild(makeButton("Copy caption", false, async (btn) => {
-      await navigator.clipboard.writeText(caption.value);
+      await copyText(caption.value);
       btn.textContent = "Copied";
     }));
     wrap.appendChild(actions);
+    wrap.appendChild(scheduler.el);
     wrap.appendChild(status);
     return wrap;
   }
@@ -1184,7 +1614,7 @@
         if (job.status === "done" && job.url) {
           stopWords();
           box.innerHTML = `<video class="video-job-player" controls playsinline preload="metadata" src="${job.url}"></video>
-            <div class="msg-actions"><a class="msg-action-btn" href="${job.url}" download="alfred-video.mp4">Download video</a></div>`;
+            <div class="msg-actions"><a class="msg-action-btn" href="${downloadUrl(job.url)}" download="alfred-video.mp4">Download video</a></div>`;
           box.appendChild(buildVideoPublish(jobId, job));
           const receipt = renderUsage(job.usage && { ...job.usage, kind: "video" });
           if (receipt) box.appendChild(receipt);
@@ -1201,34 +1631,69 @@
           return;
         }
         if (job.status === "awaiting_approval") {
-          // Nothing paid runs until he confirms.
-          const est = job.estimate || {};
-          statusMsg().textContent = `Ready to render · about $${est.total_usd ?? "?"} (HeyGen $${est.heygen_usd ?? "?"} + top half $${est.content_usd ?? "?"})`;
+          // Nothing paid runs until he confirms. He can edit the clips first.
+          statusMsg().textContent = estimateLine(job.estimate || {});
           if (!box.querySelector(".video-job-actions")) {
-            const avatars = buildAvatarPicker();
-            box.appendChild(avatars.el);
+            const normal = job.video_type === "normal";
+            const avatars = normal ? null : buildAvatarPicker();
+            let voicePanel = null;
+            // Another voice picked: the old preview no longer matches, so he hears the new one first.
+            const voices = normal ? null : buildVoicePicker(() => { if (voicePanel) voicePanel.reset(); }, job.voice_id);
+            const musicPick = normal ? buildMusicPicker(["royalty_free"]) : null;
+            if (avatars) box.appendChild(avatars.el);
+            if (voices) box.appendChild(voices.el);
+            if (musicPick) box.appendChild(musicPick.el);
             const row = document.createElement("div");
             row.className = "msg-actions video-job-actions";
+            const cleanup = () => {
+              row.remove();
+              if (avatars) avatars.el.remove();
+              if (voices) voices.el.remove();
+              if (musicPick) musicPick.el.remove();
+              if (voicePanel) voicePanel.el.remove();
+              box.querySelectorAll(".plan-editor").forEach((e) => e.remove());
+            };
             const go = makeButton("Render video", true, async (btn) => {
               btn.disabled = true;
               btn.textContent = "Starting...";
               await fetch(`/api/v1/studio/jobs/${jobId}/approve`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ avatar_id: avatars.selected() }),
+                body: JSON.stringify({ avatar_id: avatars ? avatars.selected() : null,
+                                       voice_id: voices ? voices.selected() : null,
+                                       music_id: musicPick ? musicPick.selection().music_id : null }),
               });
-              row.remove();
-              avatars.el.remove();
+              cleanup();
               tick();
+            });
+            const edit = makeButton("✎ Edit clips", false, () => {
+              if (box.querySelector(".plan-editor")) return;
+              row.before(buildPlanEditor(jobId, (out) => {
+                const text = box.closest(".bubble-body") && box.closest(".bubble-body").querySelector(".bubble-text");
+                if (text) {
+                  text.innerHTML = formatMarkdown("Here's the plan for your video (edited):\n\n" + out.markdown +
+                    "\n\nNothing has been rendered yet. Tap Render when you're happy with it.");
+                }
+                statusMsg().textContent = estimateLine(out.estimate || {});
+                if (voicePanel && !out.voice) voicePanel.reset();  // the words changed: hear the new voice
+              }));
             });
             const cancel = makeButton("Cancel", false, async () => {
               await fetch(`/api/v1/studio/jobs/${jobId}/cancel`, { method: "POST" });
-              row.remove();
-              avatars.el.remove();
+              cleanup();
               tick();
             });
             row.appendChild(go);
+            row.appendChild(edit);
             row.appendChild(cancel);
+            if (!normal) {  // Render unlocks once he has heard the voice (or if the preview can't be made)
+              voicePanel = buildVoicePreview(jobId, job.voice, (ready, failed, est) => {
+                go.disabled = !(ready || failed);
+                go.textContent = ready ? "Render video" : failed ? "Render anyway" : "Render video (hear the voice first)";
+                if (est) statusMsg().textContent = estimateLine(est);
+              }, () => (voices ? voices.selected() : null));
+              box.appendChild(voicePanel.el);
+            }
             box.appendChild(row);
           }
           return; // stop polling until he decides

@@ -24,7 +24,7 @@ from config.settings import settings
 from src.agents.content_agent import ContentAgent
 from src.agents.research_graph import run_research_workflow
 from src.llm.client import LLMClient
-from src.models.news import NewsRankingResult, PrioritizedNewsItem
+from src.models.news import NewsRankingResult, PrioritizedNewsItem, with_source
 from src.models.script import VideoBlueprint
 from src.publishers.instagram_publisher import InstagramPublisher
 from src.publishers.linkedin_publisher import LinkedInPublisher
@@ -158,9 +158,10 @@ async def _generate_post_caption(item: PrioritizedNewsItem) -> str:
         f"- Return ONLY the post text."
     )
     try:
-        return (await _llm_client.generate_text(prompt)).strip()
+        caption = (await _llm_client.generate_text(prompt)).strip()
     except Exception:
-        return f"⚡ {item.title}\n🤖 {item.summary[:100]}...\n🚀 #AI #Tech #Innovation"
+        caption = f"⚡ {item.title}\n🤖 {item.summary[:100]}...\n🚀 #AI #Tech #Innovation"
+    return with_source(caption, item.source_note())  # AI news: where it came from + when it was published
 
 
 _load_news_cache()
@@ -178,8 +179,27 @@ class AlfredChatRequest(BaseModel):
     style_hint: Optional[str] = None  # extra reply-style instructions (voice); never used for routing
     aspect: Optional[str] = None  # image aspect ratio chosen in the Custom Script panel
     video_brief: Optional[str] = None  # mode "video_plan": the brief saved when Alfred asked for the length
-    video_seconds: Optional[int] = None  # mode "video_plan": the length he picked
+    video_seconds: Optional[int] = None  # mode "video_plan"/"custom_video": the length he picked (0 = keep my words)
+    video_type: Optional[str] = None  # "clone" (HeyGen + content) | "normal" (AI clips only)
+    script: Optional[str] = None  # Custom Script steps: his text (the message is just the button he tapped)
     news_id: Optional[str] = None
+
+
+class PlanEditRequest(BaseModel):
+    scenes: List[Dict[str, Any]]
+    title: Optional[str] = None
+
+
+class SchedulePostRequest(BaseModel):
+    kind: str  # "carousel" (4 images or single image, by news_id) | "video" (studio job id)
+    ref: str  # news_id or job id
+    run_at: str  # ISO time from the app (UTC)
+    platforms: List[str]
+    caption: Optional[str] = None
+    format: str = "carousel"
+    brand: str = "instagram"
+    ig_music_id: Optional[str] = None
+    music_id: Optional[str] = None
 
 
 class CaptionRequest(BaseModel):
@@ -197,6 +217,8 @@ class ModifyImageRequest(BaseModel):
 
 class ApproveVideoRequest(BaseModel):
     avatar_id: Optional[str] = None  # the HeyGen look he picked; None = the one in .env
+    voice_id: Optional[str] = None  # the HeyGen voice he picked; None = the default one
+    music_id: Optional[str] = None  # normal video: royalty-free background track
 
 
 class PublishVideoRequest(BaseModel):
@@ -215,6 +237,7 @@ class PublishCarouselRequest(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     _load_news_cache()
+    asyncio.create_task(_schedule_loop())
 
 
 # ==============================================================================
@@ -289,17 +312,18 @@ async def generate_carousel(news_id: str):
 
 
 @app.get("/api/v1/carousel/{news_id}/single")
-async def get_single_image(news_id: str, brand: str = "instagram"):
+async def get_single_image(news_id: str, brand: str = "instagram", download: bool = False):
     """Serves the single all-in-one image (Instagram-branded or plain LinkedIn)."""
     brand = "linkedin" if brand == "linkedin" else "instagram"
     single_file = CAROUSELS_DIR / news_id / f"single_{brand}.png"
     if not single_file.exists():
         raise HTTPException(status_code=404, detail="Single image not found")
-    return FileResponse(single_file, media_type="image/png", headers=NO_CACHE)
+    return FileResponse(single_file, media_type="image/png", headers=NO_CACHE,
+                        filename=f"alfred-{brand}-post.png" if download else None)
 
 
 @app.get("/api/v1/carousel/{news_id}/slide/{slide_num}")
-async def get_carousel_slide(news_id: str, slide_num: int):
+async def get_carousel_slide(news_id: str, slide_num: int, download: bool = False):
     """Serves the generated slide image for the web app live preview."""
     slide_file = CAROUSELS_DIR / news_id / f"slide_{slide_num:02d}.png"
     if not slide_file.exists():
@@ -310,7 +334,8 @@ async def get_carousel_slide(news_id: str, slide_num: int):
             _carousel_generator.generate_carousel(item)
     if not slide_file.exists():
         raise HTTPException(status_code=404, detail="Slide image not found")
-    return FileResponse(slide_file, media_type="image/png", headers=NO_CACHE)
+    return FileResponse(slide_file, media_type="image/png", headers=NO_CACHE,
+                        filename=f"alfred-slide-{slide_num}.png" if download else None)
 
 
 @app.post("/api/v1/carousel/{news_id}/caption")
@@ -361,13 +386,56 @@ async def studio_avatars(refresh: bool = False):
         return {"avatars": [], "reason": str(e)}
 
 
+@app.get("/api/v1/studio/voices")
+async def studio_voices(refresh: bool = False):
+    """His own HeyGen voices for the picker shown before rendering."""
+    try:
+        return {"voices": await studio.list_voices(refresh)}
+    except Exception as e:
+        return {"voices": [], "reason": str(e)}
+
+
 @app.post("/api/v1/studio/jobs/{job_id}/approve")
 async def studio_job_approve(job_id: str, payload: Optional[ApproveVideoRequest] = None):
     """He tapped Render: only now does anything paid (HeyGen, Omni Flash) run."""
-    job = await studio.approve_job(job_id, payload.avatar_id if payload else None)
+    job = await studio.approve_job(job_id, payload.avatar_id if payload else None,
+                                   payload.music_id if payload else None, payload.voice_id if payload else None)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/api/v1/studio/jobs/{job_id}/plan")
+async def studio_job_plan(job_id: str):
+    plan = studio.get_plan(job_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return plan
+
+
+@app.post("/api/v1/studio/jobs/{job_id}/voice")
+async def studio_job_voice(job_id: str, clip: Optional[int] = None, voice_id: Optional[str] = None):
+    """Voice preview in his cloned voice before Render (clip=N redoes only that clip)."""
+    try:
+        return await studio.make_voice(job_id, clip, voice_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Voice preview failed for {job_id}: {e}")
+        raise HTTPException(status_code=502, detail=str(e)[:300])
+
+
+@app.put("/api/v1/studio/jobs/{job_id}/plan")
+async def studio_job_plan_edit(job_id: str, payload: PlanEditRequest):
+    """His edits to the clips before Render; timings and the estimate are recalculated."""
+    try:
+        return studio.update_plan(job_id, payload.scenes, payload.title)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/v1/studio/jobs/{job_id}/publish")
@@ -417,11 +485,12 @@ async def studio_job(job_id: str):
 
 
 @app.get("/api/v1/studio/files/{name}")
-async def studio_file(name: str):
+async def studio_file(name: str, download: bool = False):
     path = studio.studio_file(name)
     if not path:
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path, headers=NO_CACHE if path.suffix != ".mp4" else None)
+    return FileResponse(path, headers=NO_CACHE if path.suffix != ".mp4" else None,
+                        filename=f"alfred-{path.name}" if download else None)
 
 
 @app.post("/api/v1/images/modify")
@@ -548,6 +617,145 @@ async def publish_carousel(news_id: str, payload: PublishCarouselRequest):
         "caption": caption,
         "results": results,
     }
+
+
+# ==============================================================================
+# Scheduled posts: saved to disk, posted by a background loop when due (the server must be running then)
+# ==============================================================================
+
+SCHEDULE_FILE = BASE_DIR / "artifacts" / "scheduled_posts.json"
+SCHEDULE_LATE_LIMIT = 12 * 3600  # server was off at the time: still post up to 12 h late, else mark "missed"
+_schedule_lock = asyncio.Lock()
+
+
+def _load_schedule() -> List[Dict[str, Any]]:
+    try:
+        return json.loads(SCHEDULE_FILE.read_text(encoding="utf-8")) if SCHEDULE_FILE.exists() else []
+    except Exception:
+        return []
+
+
+def _save_schedule(items: List[Dict[str, Any]]) -> None:
+    SCHEDULE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SCHEDULE_FILE.write_text(json.dumps(items, indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+async def _update_schedule(entry_id: str, **fields: Any) -> None:
+    async with _schedule_lock:
+        items = _load_schedule()
+        for e in items:
+            if e["id"] == entry_id:
+                e.update(fields)
+        _save_schedule(items)
+
+
+@app.post("/api/v1/schedule")
+async def schedule_post(req: SchedulePostRequest):
+    from datetime import datetime
+    try:
+        run_at = datetime.fromisoformat(req.run_at.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Pick a valid date and time.")
+    if run_at < time.time() - 60:
+        raise HTTPException(status_code=400, detail="That time is in the past.")
+    platforms = [p for p in req.platforms if p in _publishers]
+    if not platforms:
+        raise HTTPException(status_code=400, detail="Select at least one platform.")
+    if req.kind == "video":
+        job = studio.get_job(req.ref)
+        if not job or job.get("status") != "done":
+            raise HTTPException(status_code=404, detail="Finished video not found")
+        title = job["plan"].get("title") or "Video"
+        if req.caption:
+            studio.update_job(job, caption=req.caption)
+    elif req.kind == "carousel":
+        _load_news_cache()
+        item = _cached_news.get(req.ref)
+        if not item:
+            raise HTTPException(status_code=404, detail="News story not found")
+        title = item.title
+        if req.caption and req.caption.strip():
+            storage.save_caption(req.ref, req.caption.strip())
+    else:
+        raise HTTPException(status_code=400, detail="kind must be 'carousel' or 'video'")
+    entry = {**req.model_dump(), "platforms": platforms, "id": secrets.token_hex(6), "title": title[:120],
+             "run_at_ts": run_at, "status": "scheduled", "created": time.time()}
+    async with _schedule_lock:
+        items = _load_schedule()
+        items.append(entry)
+        _save_schedule(items)
+    return entry
+
+
+@app.get("/api/v1/schedule")
+async def list_scheduled_posts():
+    """Upcoming posts first (soonest first), then the last 20 finished ones."""
+    items = _load_schedule()
+    upcoming = sorted([e for e in items if e["status"] in ("scheduled", "posting")], key=lambda e: e["run_at_ts"])
+    done = sorted([e for e in items if e["status"] not in ("scheduled", "posting")],
+                  key=lambda e: e["run_at_ts"], reverse=True)[:20]
+    return {"items": upcoming + done}
+
+
+@app.delete("/api/v1/schedule/{entry_id}")
+async def cancel_scheduled_post(entry_id: str):
+    async with _schedule_lock:
+        items = _load_schedule()
+        entry = next((e for e in items if e["id"] == entry_id), None)
+        if not entry:
+            raise HTTPException(status_code=404, detail="Scheduled post not found")
+        if entry["status"] != "scheduled":
+            raise HTTPException(status_code=400, detail=f"It is already {entry['status']}.")
+        entry["status"] = "cancelled"
+        _save_schedule(items)
+    return entry
+
+
+async def _post_scheduled(entry: Dict[str, Any]) -> None:
+    try:
+        if entry["kind"] == "video":
+            res = await studio_job_publish(entry["ref"], PublishVideoRequest(platforms=entry["platforms"],
+                                                                             caption=entry.get("caption")))
+        else:
+            res = await publish_carousel(entry["ref"], PublishCarouselRequest(
+                platforms=entry["platforms"], format=entry.get("format", "carousel"),
+                brand=entry.get("brand", "instagram"), ig_music_id=entry.get("ig_music_id"),
+                music_id=entry.get("music_id")))
+        results = res.get("results") or {}
+        ok = [p for p, r in results.items() if r.get("status") == "success"]
+        status = "posted" if len(ok) == len(entry["platforms"]) else ("partial" if ok else "failed")
+        await _update_schedule(entry["id"], status=status, results=results, finished=time.time())
+    except Exception as e:
+        logger.error(f"Scheduled post {entry['id']} failed: {e}")
+        detail = getattr(e, "detail", None) or str(e)
+        await _update_schedule(entry["id"], status="failed", error=str(detail)[:300], finished=time.time())
+
+
+async def _schedule_loop() -> None:
+    while True:
+        try:
+            now = time.time()
+            due = []
+            async with _schedule_lock:
+                items = _load_schedule()
+                for e in items:
+                    if e["status"] == "posting" and now - e.get("started", now) > 3600:
+                        e["status"] = "failed"  # the server stopped while it was posting
+                        e["error"] = "Interrupted (the server restarted while posting)"
+                    if e["status"] != "scheduled" or e["run_at_ts"] > now:
+                        continue
+                    if now - e["run_at_ts"] > SCHEDULE_LATE_LIMIT:
+                        e["status"], e["error"] = "missed", "The server was off at the scheduled time."
+                    else:
+                        e["status"], e["started"] = "posting", now
+                        due.append(dict(e))
+                _save_schedule(items)
+            for e in due:
+                logger.info(f"Posting scheduled {e['kind']} {e['ref']} to {e['platforms']}")
+                await _post_scheduled(e)
+        except Exception as e:
+            logger.warning(f"Schedule loop error: {e}")
+        await asyncio.sleep(30)
 
 
 # ==============================================================================
@@ -783,25 +991,34 @@ def _seconds_in(text: str) -> Optional[int]:
 
 
 async def _studio_video(brief: str, custom_script: bool = False, news_id: Optional[str] = None,
-                        seconds: Optional[int] = None) -> Dict[str, Any]:
-    """Plan the clips, show them, and start the HeyGen render in the background."""
-    progress.report(f"Writing a {seconds or studio.DEFAULT_SECONDS}-second script: hook and time-coded clips..."
-                    if not custom_script else "Splitting your script into clips and planning the visuals...")
+                        seconds: Optional[int] = None, video_type: str = "clone") -> Dict[str, Any]:
+    """Plan the clips and show them; nothing paid runs until he taps Render (he can edit the clips first)."""
+    if video_type == "normal":
+        progress.report(f"Planning a {seconds or studio.DEFAULT_SECONDS}-second AI video: time-coded clips...")
+    elif custom_script and not seconds:
+        progress.report("Splitting your script into clips and planning the visuals...")
+    else:
+        progress.report(f"Writing a {seconds or studio.DEFAULT_SECONDS}-second script: hook and time-coded clips...")
     try:
-        plan = await studio.plan_video(brief, custom_script=custom_script, seconds=seconds)
+        plan = await studio.plan_video(brief, custom_script=custom_script, seconds=seconds, video_type=video_type)
     except Exception as e:
         return {"reply": f"I couldn't plan the video, Master Ashok: {e}", "author": "Alfred"}
-    job = await studio.start_video_job(plan)
+    job = await studio.start_video_job(plan, news_id)
     if job["status"] == "failed":
         note = f"\n\nI can't render it yet: {job['message']}"
     else:
-        est = job["estimate"]
-        top = {"wan": "Wan 2.6 Flash", "omni_flash": "Gemini Omni Flash"}.get(est["top_engine"], "free zoom/pan")
-        note = (f"\n\nNothing has been rendered yet. Estimated cost: about ${est['total_usd']} "
-                f"(HeyGen {est['heygen_engine']} ${est['heygen_usd']} + top half {top} ${est['content_usd']}). "
-                "Tap Render when you're happy with the plan.")
+        note = "\n\nNothing has been rendered yet. " + _estimate_text(job["estimate"]) + \
+               " Edit the clips if you like, then tap Render."
     return {"reply": "Here's the plan for your video:\n\n" + studio.plan_markdown(plan) + note, "author": "Alfred",
             "action": "video_job", "job_id": job["id"], "news_id": news_id}
+
+
+def _estimate_text(est: Dict[str, Any]) -> str:
+    top = {"wan": "Wan 2.6 Flash", "omni_flash": "Gemini Omni Flash"}.get(est["top_engine"], "free zoom/pan")
+    if est.get("type") == "normal":
+        return f"Estimated cost: about ${est['total_usd']} (images + {top} clips, no HeyGen)."
+    return (f"Estimated cost: about ${est['total_usd']} (HeyGen {est['heygen_engine']} ${est['heygen_usd']} "
+            f"+ top half {top} ${est['content_usd']}).")
 
 
 async def _studio_image(request: str, aspect: Optional[str] = None, exact_prompt: bool = False) -> Dict[str, Any]:
@@ -832,13 +1049,29 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             return {"reply": f"I could not read that file properly, Master Ashok: {e}", "author": "Alfred"}
 
     # The AI router decides the action from his actual words (G-Intelligence mode always means Google).
-    if req.mode == "custom_video":
-        return await _studio_video(req.message, custom_script=True)
+    script = (req.script or req.message).strip()
+    if req.mode == "custom_script":  # Custom Script step 1: image or video? (the app shows the choices)
+        words = len(script.split())
+        return {"reply": f"Got your script ({words} words). What should I make from it, Master Ashok?",
+                "author": "Alfred", "action": "script_kind", "script": script, "words": words,
+                "keep_seconds": max(1, round(words / studio.WORDS_PER_SECOND)), "options": studio.VIDEO_LENGTHS}
+    if req.mode == "image_prompt":  # Custom Script -> Image: show the exact prompt before anything is paid
+        progress.report("Writing the image prompt...")
+        try:
+            p = await studio.image_prompt(script)
+        except Exception as e:
+            return {"reply": f"I couldn't write the image prompt, Master Ashok: {e}", "author": "Alfred"}
+        return {"reply": "Here's how I'll generate the image. Edit the prompt or ratio if you like, "
+                         "then tap Generate image.", "author": "Alfred", "action": "image_prompt", **p}
+    if req.mode == "custom_video":  # Custom Script -> Video -> clone / normal -> length
+        return await _studio_video(script, custom_script=True, seconds=req.video_seconds or None,
+                                   video_type="normal" if req.video_type == "normal" else "clone")
     if req.mode == "video_plan":
         return await _studio_video(req.video_brief or req.message, news_id=req.news_id,
-                                   seconds=req.video_seconds or studio.DEFAULT_SECONDS)
+                                   seconds=req.video_seconds or studio.DEFAULT_SECONDS,
+                                   video_type="normal" if req.video_type == "normal" else "clone")
     if req.mode == "custom_image":
-        return await _studio_image(req.message, req.aspect, exact_prompt=True)
+        return await _studio_image(script, req.aspect, exact_prompt=True)
     route = {"intent": "google"} if req.mode == "google" else await _route_intent(req.message, history)
     intent = route["intent"]
     logger.info(f"Router: {intent} {route} <- {req.message[:80]!r}")

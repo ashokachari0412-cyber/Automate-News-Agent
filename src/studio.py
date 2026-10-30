@@ -2,11 +2,11 @@
 
 Video pipeline (nothing paid runs until he taps "Render"):
   1. Gemini writes the script as time-coded clips (what he says, what the top half shows, how it moves).
-  2. Each clip gets a 16:9 image from the image models (Nano Banana, Flux fallback).
+  2. Each clip gets a square 1:1 image (the top part is about square) from the image models (Nano Banana, Flux fallback).
   3. In parallel:  HeyGen (Avatar III) renders ONE continuous take of him saying the whole script,
                    and each image becomes a short content clip (Gemini Omni Flash, or a free FFmpeg zoom).
-  4. Clip lengths are synced to his real voice, then FFmpeg stacks: content on the top 65%, his clone on the
-     bottom 35%, subtitles just above the clone, cross-faded in the middle with no hard edge, deep-black fades at the top and bottom.
+  4. Clip lengths are synced to his real voice, then FFmpeg stacks: content on the top 55%, his clone on the
+     bottom 45%, subtitles just above the clone, cross-faded in the middle with no hard edge, clean top and bottom edges.
 """
 
 import asyncio
@@ -48,7 +48,7 @@ Return ONLY JSON:
   "scenes": [
     {{"spoken": "<exactly what Ashok says in this clip>",
       "on_screen": "<what the top half shows, one sentence>",
-      "visual": "<photorealistic 16:9 image prompt for the top half, 25-45 words, the concrete subject, no text>",
+      "visual": "<photorealistic SQUARE 1:1 image prompt for the top half, subject centred, 25-45 words, the concrete subject, no text>",
       "motion": "<how that image comes alive as a short video: camera move + what moves, 10-25 words>"}}
   ]}}
 
@@ -66,6 +66,32 @@ His script:
 
 BRIEF_SOURCE = """Write the script yourself from this brief:
 \"\"\"{brief}\"\"\""""
+
+FIT_SOURCE = """Base the script on HIS SCRIPT below: keep his message, his key phrases and the order of his points,
+but shorten or expand it so it fits the length exactly. Keep his voice; add no facts he didn't give.
+His script:
+\"\"\"{script}\"\"\""""
+
+NORMAL_PROMPT = """You are the creative director of Master Ashok's (@ashok_a.i) short-form AI videos.
+Plan a vertical 9:16 video of about {seconds} seconds made ONLY of AI-generated clips (an image-to-video model,
+full screen). There is no presenter, avatar or voice-over; short on-screen text carries the message.
+
+His idea / script:
+\"\"\"{brief}\"\"\"
+
+Return ONLY JSON:
+{{"title": "<short title>",
+  "scenes": [
+    {{"caption": "<on-screen text for this clip, 2-7 words, the key point from his script (\\"\\" for none)>",
+      "on_screen": "<what this clip shows, one sentence>",
+      "visual": "<photorealistic VERTICAL 9:16 image prompt, 25-45 words, the concrete subject, no text>",
+      "motion": "<how that image comes alive: camera move + what moves, 10-25 words>",
+      "seconds": <whole seconds for this clip, 3-10>}}
+  ]}}
+
+Rules:
+- Exactly {scenes} scenes whose seconds add up to {seconds}. Follow the order and meaning of his idea/script.
+- Visuals must show the actual subject (product, device, place, result), never generic people at laptops."""
 
 IMAGE_PROMPT = """Turn this image request into a prompt for an image model and pick the aspect ratio.
 Request: \"\"\"{request}\"\"\"
@@ -126,20 +152,28 @@ def video_env() -> Dict[str, str]:
 
 # API prices (USD) for the estimate before rendering and the receipt after (see src/costs.py).
 from src import costs
-from src.costs import HEYGEN_PER_MIN, OMNI_PER_SEC, WAN_PER_SEC
+from src.costs import HEYGEN_PER_MIN, OMNI_PER_SEC, SEEDREAM_PER_IMAGE, WAN_PER_SEC
 ENGINE_NAMES = {"avatar_iii": "Avatar III", "avatar_iv": "Avatar IV", "avatar_v": "Avatar V"}
 
 
 def estimate_cost(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Per clip, as billed: one image each, and Wan bills whole seconds (a clone clip is rendered 1 s longer
+    than its line). A normal video has no HeyGen part and always uses Wan."""
+    import math
     secs = max(1, plan.get("duration_sec", 40))
+    normal = plan.get("type") == "normal"
     hg_engine, top = heygen_env()["engine"], video_env()
-    heygen = round(HEYGEN_PER_MIN.get(hg_engine, 1.0) * secs / 60, 2)
+    engine = "wan" if normal else top["engine"]
+    heygen = 0.0 if normal else round(HEYGEN_PER_MIN.get(hg_engine, 1.0) * secs / 60, 2)
+    clip_secs = [max(2, min(15, math.ceil(float(s["seconds"]) if normal else
+                                          len(s["spoken"].split()) / WORDS_PER_SECOND + 1)))
+                 for s in plan["scenes"]]
     rate = {"omni_flash": OMNI_PER_SEC.get(top["resolution"], 0.10),
-            "wan": WAN_PER_SEC.get(top["resolution"], 0.025)}.get(top["engine"], 0.0)
-    content = round(rate * secs, 2)
+            "wan": WAN_PER_SEC.get(top["resolution"], 0.025)}.get(engine, 0.0)
+    content = round(rate * sum(clip_secs) + SEEDREAM_PER_IMAGE * len(clip_secs), 2)
     return {"heygen_usd": heygen, "content_usd": content, "total_usd": round(heygen + content, 2),
-            "heygen_engine": hg_engine, "top_engine": top["engine"], "top_resolution": top["resolution"],
-            "seconds": secs}
+            "heygen_engine": None if normal else hg_engine, "top_engine": engine,
+            "top_resolution": top["resolution"], "seconds": secs, "type": plan.get("type", "clone")}
 
 
 def heygen_ready() -> Optional[str]:
@@ -295,7 +329,7 @@ Clips:
 
 Return ONLY JSON: {{"title": "<short title>", "scenes": [{{
 "on_screen": "<what the top half shows, one sentence>",
-"visual": "<photorealistic 16:9 image prompt, 25-45 words, the concrete subject, no text>",
+"visual": "<photorealistic SQUARE 1:1 image prompt, subject centred, 25-45 words, the concrete subject, no text>",
 "motion": "<how that image comes alive as a short video: camera move + what moves, 10-25 words>"}}]}}
 Exactly {n} scenes, in order. Visuals must show the actual subject of each clip, never generic people at laptops."""
 
@@ -308,7 +342,58 @@ def _length_rules(seconds: int) -> Dict[str, int]:
             "scenes": scenes, "per_scene": round(words / scenes)}
 
 
-async def plan_video(brief: str, custom_script: bool = False, seconds: Optional[int] = None) -> Dict[str, Any]:
+DEFAULT_MOTION = "Slow cinematic push-in with subtle natural movement"
+
+
+def retime(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Start/end of every clip and the total length. Clone: from the words (his pace; synced to his real voice
+    after HeyGen renders). Normal: each clip's own seconds (whole seconds, 2-15, what Wan renders)."""
+    t = 0.0
+    for s in plan["scenes"]:
+        if plan.get("type") == "normal":
+            s["seconds"] = max(2, min(15, int(round(float(s.get("seconds") or 5)))))
+            dur = float(s["seconds"])
+        else:
+            dur = max(2.0, len(str(s["spoken"]).split()) / WORDS_PER_SECOND)
+        s["start"], s["end"] = _fmt(t), _fmt(t + dur)
+        t += dur
+    plan["duration_sec"] = round(t)
+    return plan
+
+
+async def _plan_normal(brief: str, seconds: int) -> Dict[str, Any]:
+    """A no-avatar video: AI clips only, full screen, short on-screen text, clip lengths that add up to `seconds`."""
+    n = max(1, min(10, round(seconds / 5)))
+    data = await _llm.generate_json(NORMAL_PROMPT.format(brief=brief, seconds=seconds, scenes=n))
+    scenes = []
+    for s in (data.get("scenes") or []):
+        if isinstance(s, dict) and s.get("visual"):
+            try:
+                secs = float(s.get("seconds") or seconds / n)
+            except (TypeError, ValueError):
+                secs = seconds / n
+            scenes.append({"caption": str(s.get("caption") or "").strip(), "on_screen": s.get("on_screen", ""),
+                           "visual": s["visual"], "motion": s.get("motion") or DEFAULT_MOTION, "seconds": secs})
+    if not scenes:
+        raise ValueError("The planner returned no clips")
+    scale = seconds / max(1.0, sum(s["seconds"] for s in scenes))  # make the clips add up to his length
+    for s in scenes:
+        s["seconds"] = s["seconds"] * scale
+    return retime({"type": "normal", "title": data.get("title") or "Alfred video",
+                   "hook": scenes[0]["caption"] or scenes[0]["on_screen"], "scenes": scenes, "target_sec": seconds})
+
+
+async def plan_video(brief: str, custom_script: bool = False, seconds: Optional[int] = None,
+                     video_type: str = "clone") -> Dict[str, Any]:
+    """video_type "clone": him on the bottom (HeyGen) + content on top. With custom_script and no `seconds`
+    his words are kept exactly; with `seconds` his script is tightened/expanded to that length.
+    video_type "normal": AI clips only (no HeyGen), planned from his text."""
+    if video_type == "normal":
+        return await _plan_normal(brief, int(seconds or DEFAULT_SECONDS))
+    if custom_script and seconds:
+        custom_script, brief_source = False, FIT_SOURCE.format(script=brief)
+    else:
+        brief_source = BRIEF_SOURCE.format(brief=brief)
     if custom_script:
         # His words are split by code and never sent back through the model, so they can't be changed.
         clips = _split_script(brief)
@@ -325,23 +410,60 @@ async def plan_video(brief: str, custom_script: bool = False, seconds: Optional[
                            "motion": s.get("motion") or "Slow cinematic push-in with subtle natural movement"})
         data = {"title": data.get("title"), "hook": clips[0]}
     else:
-        data = await _llm.generate_json(PLAN_PROMPT.format(source=BRIEF_SOURCE.format(brief=brief),
+        data = await _llm.generate_json(PLAN_PROMPT.format(source=brief_source,
                                                            **_length_rules(int(seconds or DEFAULT_SECONDS))))
         scenes = [s for s in (data.get("scenes") or []) if isinstance(s, dict) and s.get("spoken")]
     scenes = _drop_cta(scenes)
     if not scenes:
         raise ValueError("The planner returned no scenes")
-    t = 0.0
-    for s in scenes:  # estimated timings; the final ones are synced to his real voice after HeyGen renders
-        s.setdefault("motion", "Slow cinematic push-in with subtle natural movement")
-        dur = max(2.0, len(str(s["spoken"]).split()) / WORDS_PER_SECOND)
-        s["start"], s["end"] = _fmt(t), _fmt(t + dur)
-        t += dur
-    return {"title": data.get("title") or "Alfred video", "hook": data.get("hook") or scenes[0]["spoken"],
-            "scenes": scenes, "duration_sec": round(t), "target_sec": seconds}
+    for s in scenes:
+        s.setdefault("motion", DEFAULT_MOTION)
+    return retime({"type": "clone", "title": data.get("title") or "Alfred video",
+                   "hook": data.get("hook") or scenes[0]["spoken"], "scenes": scenes, "target_sec": seconds})
+
+
+def clean_scenes(plan_type: str, scenes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """His edited clips from the app: trimmed text, required fields checked (raises ValueError)."""
+    out = []
+    for i, s in enumerate(scenes, 1):
+        if not isinstance(s, dict):
+            continue
+        visual = " ".join(str(s.get("visual") or "").split())
+        if plan_type == "normal":
+            if not visual:
+                raise ValueError(f"Clip {i}: describe what it shows")
+            try:
+                secs = float(s.get("seconds") or 5)
+            except (TypeError, ValueError):
+                raise ValueError(f"Clip {i}: the length must be a number of seconds")
+            out.append({"caption": " ".join(str(s.get("caption") or "").split()), "visual": visual,
+                        "on_screen": str(s.get("on_screen") or ""), "seconds": secs,
+                        "motion": " ".join(str(s.get("motion") or "").split()) or DEFAULT_MOTION})
+        else:
+            spoken = " ".join(str(s.get("spoken") or "").split())
+            if not spoken:
+                continue  # an emptied clip is removed
+            out.append({"spoken": spoken, "on_screen": str(s.get("on_screen") or ""),
+                        "visual": visual or f"Photorealistic wide image representing: {spoken}",
+                        "motion": " ".join(str(s.get("motion") or "").split()) or DEFAULT_MOTION})
+    if not out:
+        raise ValueError("The plan needs at least one clip")
+    if len(out) > 15:
+        raise ValueError("At most 15 clips")
+    return out
 
 
 def plan_markdown(plan: Dict[str, Any]) -> str:
+    if plan.get("type") == "normal":
+        lines = [f"**{plan['title']}** (9:16 full-screen AI video, about {plan['duration_sec']}s)", "",
+                 "No avatar: every clip is generated by the video model (Wan 2.6 Flash)", ""]
+        for i, s in enumerate(plan["scenes"], 1):
+            lines.append(f"**Clip {i} ({s['start']}-{s['end']}, {s['seconds']}s)**")
+            lines.append(f"Shows: {s.get('on_screen') or s['visual']}")
+            if s.get("caption"):
+                lines.append(f"Text on screen: \"{s['caption']}\"")
+            lines.append("")
+        return "\n".join(lines).strip()
     lines = [f"**{plan['title']}** (9:16 split screen, about {plan['duration_sec']}s)", "",
              f"**Hook:** \"{plan['hook']}\"", "",
              "Top half: content video · Bottom half: you explaining (HeyGen)", ""]
@@ -359,14 +481,20 @@ def _render_image(prompt: str, aspect: str, out: Path, label: str) -> Optional[P
     return _render(prompt, int(time.time()) % 100000, out, _llm, label=label, aspect=aspect)
 
 
+async def image_prompt(request: str) -> Dict[str, str]:
+    """His request -> the prompt + aspect the image model will get (shown to him before anything is paid)."""
+    data = await _llm.generate_json(IMAGE_PROMPT.format(request=request))
+    aspect = data.get("aspect") if data.get("aspect") in ("1:1", "4:5", "9:16", "16:9") else "4:5"
+    return {"prompt": str(data.get("prompt") or request), "aspect": aspect}
+
+
 async def make_image(request: str, aspect: Optional[str] = None, exact_prompt: bool = False) -> Dict[str, Any]:
     """Image from a chat request (enhanced by Gemini) or his own prompt (used as written)."""
     if exact_prompt:
         prompt, aspect = request, aspect or "4:5"
     else:
-        data = await _llm.generate_json(IMAGE_PROMPT.format(request=request))
-        prompt = str(data.get("prompt") or request)
-        aspect = aspect or (data.get("aspect") if data.get("aspect") in ("1:1", "4:5", "9:16", "16:9") else "4:5")
+        p = await image_prompt(request)
+        prompt, aspect = p["prompt"], aspect or p["aspect"]
     STUDIO_DIR.mkdir(parents=True, exist_ok=True)
     name = f"img_{uuid.uuid4().hex[:10]}.png"
     ledger = costs.start()
@@ -419,6 +547,39 @@ async def list_avatars(refresh: bool = False) -> List[Dict[str, Any]]:
     return [{**a, "current": a["id"] == current} for a in items]
 
 
+VOICES_FILE = STUDIO_DIR / "voices.json"
+
+
+async def list_voices(refresh: bool = False) -> List[Dict[str, Any]]:
+    """His own HeyGen voices (clones) for the picker shown before rendering; cached for 12 h.
+    current = the one used by default (HEYGEN_VOICE_ID, else the one resolve_heygen picked)."""
+    items: List[Dict[str, Any]] = []
+    try:
+        cached = json.loads(VOICES_FILE.read_text(encoding="utf-8"))
+        if not refresh and time.time() - cached.get("time", 0) < 12 * 3600:
+            items = cached["items"]
+    except Exception:
+        pass
+    if not items:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            for v in await _list_all(client, "/v3/voices", {"type": "private"}):
+                if not v.get("voice_id"):
+                    continue
+                preview = v.get("preview_audio_url") or v.get("preview_audio") or next(
+                    (val for k, val in v.items() if "preview" in k and isinstance(val, str) and val.startswith("http")), None)
+                items.append({"id": v["voice_id"], "name": v.get("name") or "Voice", "language": v.get("language"),
+                              "gender": v.get("gender"), "preview": preview})
+        STUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        VOICES_FILE.write_text(json.dumps({"time": time.time(), "items": items}, indent=1), encoding="utf-8")
+    current = heygen_env()["voice_id"]
+    if not current:
+        try:
+            current = (await resolve_heygen())["voice_id"]
+        except Exception:
+            current = ""
+    return [{**v, "current": v["id"] == current} for v in items]
+
+
 # ----------------------------------------------------------------------------- captions
 CAPTION_PROMPT = """Write the post caption for this short vertical video by Master Ashok (@ashok_a.i), for Instagram,
 LinkedIn and YouTube Shorts.
@@ -429,16 +590,28 @@ At most 2 emojis, no "follow for more", no facts beyond what he says.
 Return ONLY JSON: {{"caption": "<the caption>"}}"""
 
 
-async def make_caption(plan: Dict[str, Any]) -> str:
-    script = " ".join(s["spoken"] for s in plan["scenes"])
+def _plan_text(plan: Dict[str, Any]) -> str:
+    """What the video says: his spoken lines, or (normal video) the on-screen text and what the clips show."""
+    return " ".join(s.get("spoken") or s.get("caption") or s.get("on_screen") or "" for s in plan["scenes"]).strip()
+
+
+async def make_caption(plan: Dict[str, Any], news_id: Optional[str] = None) -> str:
+    """Post caption; for an AI-news video the source (with link) and the publish date are added."""
+    script = _plan_text(plan)
+    caption = ""
     try:
         data = await _llm.generate_json(CAPTION_PROMPT.format(title=plan.get("title", ""), script=script))
         caption = str(data.get("caption") or "").strip()
-        if caption:
-            return caption
     except Exception as e:
         logger.warning(f"Caption generation failed: {e}")
-    return f"{plan.get('title', '')}\n\n{script}\n\n#AI #AINews #Tech"
+    caption = caption or f"{plan.get('title', '')}\n\n{script}\n\n#AI #AINews #Tech"
+    if news_id:
+        from src import storage
+        from src.models.news import with_source
+        item = storage.load_news().get(news_id)
+        if item:
+            caption = with_source(caption, item.source_note())
+    return caption
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -466,11 +639,17 @@ def _progress(job: Dict[str, Any], stage: Optional[str] = None, **parts: float) 
 async def _heygen_take(client: httpx.AsyncClient, hg: Dict[str, Any], script: str, job: Dict[str, Any]) -> Path:
     """ONE continuous avatar take of the whole script (landscape, filled), downloaded when ready."""
     from src.video.split_video import AVATAR_SPEED
-    body = {"type": "avatar", "avatar_id": hg["avatar_id"], "voice_id": hg["voice_id"], "script": script,
-            # HeyGen speaks faster itself and animates the lips to it at full frame rate (no dropped frames)
-            "voice_settings": {"speed": AVATAR_SPEED},
+    body = {"type": "avatar", "avatar_id": hg["avatar_id"],
             "engine": {"type": hg["engine"]}, "aspect_ratio": "16:9", "fit": "cover", "resolution": "1080p",
             "title": f"Alfred: {job['plan']['title'][:60]}"}
+    voice = job.get("voice") or {}
+    if voice.get("file") and (STUDIO_DIR / voice["file"]).exists():
+        # He approved the voice preview: HeyGen only lip-syncs to that exact audio (no new voice, no surprises).
+        job["message"] = "Uploading your approved voice to HeyGen..."
+        body["audio_asset_id"] = await _upload_audio(client, STUDIO_DIR / voice["file"])
+    else:
+        # HeyGen speaks faster itself and animates the lips to it at full frame rate (no dropped frames)
+        body.update(voice_id=hg["voice_id"], script=script, voice_settings={"speed": AVATAR_SPEED})
     r = await client.post(f"{HEYGEN}/v3/videos", headers=_headers(), json=body)
     if r.status_code != 200:
         raise RuntimeError(f"HeyGen error {r.status_code}: {r.text[:300]}")
@@ -503,7 +682,7 @@ async def _heygen_take(client: httpx.AsyncClient, hg: Dict[str, Any], script: st
 
 
 async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Per scene: a 16:9 image, then a content clip from the top engine (or just the image for the free zoom)."""
+    """Per scene: a square 1:1 image (the top part is about 1080x1126, so nothing important is cropped), then a content clip from the top engine (or just the image for the free zoom)."""
     from src.video import split_video
     plan, top = job["plan"], video_env()
     sources: List[Dict[str, Any]] = []
@@ -511,7 +690,7 @@ async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
     for i, sc in enumerate(plan["scenes"], 1):
         job["message"] = f"Creating image {i} of {len(plan['scenes'])} for the top half..."
         _progress(job, "imagining", top=(i - 1) / n)
-        img = await asyncio.to_thread(_render_image, sc["visual"], "16:9", STUDIO_DIR / f"{job['id']}_scene{i}.png",
+        img = await asyncio.to_thread(_render_image, sc["visual"], "1:1", STUDIO_DIR / f"{job['id']}_scene{i}.png",
                                       f"clip {i} image")
         if not img:
             raise RuntimeError(f"All image models failed for clip {i}")
@@ -551,9 +730,99 @@ _build_tasks: Dict[str, "asyncio.Task"] = {}
 
 
 async def _build(job_id: str) -> None:
-    from src.video import split_video
+    from src import music
     job = _load_jobs()[job_id]
     ledger = costs.start()
+    try:
+        make = _make_normal if job["plan"].get("type") == "normal" else _make_clone
+        name, total = await make(job)
+        caption = await make_caption(job["plan"], job.get("news_id"))  # editable in the app before posting
+        job["caption"] = music.with_credit(caption, music.find(job.get("music_id")))
+        job.update(status="done", message="Your video is ready.", file=name, url=f"/api/v1/studio/files/{name}",
+                   duration=round(total, 1), usage=await costs.summary(ledger), progress=100, stage="done")
+        try:
+            job["final_copy"] = str(save_final_copy(job, STUDIO_DIR / name))
+        except Exception as e:
+            logger.warning(f"Could not save the final copy of {job_id}: {e}")
+        _save_job(job)
+    except asyncio.CancelledError:  # he pressed Cancel during the render
+        job.update(status="cancelled", message="Render cancelled. Nothing more will be created; "
+                   "anything already started was charged (see below).", usage=await costs.summary(ledger))
+        _save_job(job)
+    except Exception as e:
+        logger.error(f"Studio job {job_id} failed: {e}")
+        job.update(status="failed", message=str(e)[:300], usage=await costs.summary(ledger))  # what was spent anyway
+        _save_job(job)
+    finally:
+        _build_tasks.pop(job_id, None)
+
+
+FINAL_DIR = BASE_DIR / "artifacts" / "final_videos"
+
+
+def short_name(text: str, words: int = 4, max_len: int = 32) -> str:
+    """'OpenAI Makes It Easier for Websites to Block AI Training' -> 'openai_makes_easier_websites'."""
+    skip = {"a", "an", "the", "it", "its", "for", "to", "of", "and", "in", "on", "with", "is", "new", "how"}
+    parts = [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w not in skip][:words]
+    return ("_".join(parts) or "video")[:max_len].rstrip("_")
+
+
+def save_final_copy(job: Dict[str, Any], video: Path) -> Path:
+    """Copy of the finished video in artifacts/final_videos as <news_name>_YYYYMMDDHHMM.mp4
+    (the news story's title for news videos, else the video's title)."""
+    import shutil
+    from src import storage
+    item = storage.load_news().get(job.get("news_id") or "")
+    name = short_name(item.title if item else job["plan"].get("title", ""))
+    FINAL_DIR.mkdir(parents=True, exist_ok=True)
+    out = FINAL_DIR / f"{name}_{time.strftime('%Y%m%d%H%M')}.mp4"
+    shutil.copy2(video, out)
+    return out
+
+
+async def _make_normal(job: Dict[str, Any]) -> tuple:
+    """No avatar: per clip a 9:16 image -> Wan 2.6 Flash clip of the clip's length (free zoom if Wan fails),
+    then full screen with the on-screen text and optional royalty-free music."""
+    from src import music
+    from src.video import split_video
+    job_id, scenes = job["id"], job["plan"]["scenes"]
+    n, res = len(scenes), video_env()["resolution"]
+    job.update(status="rendering", message="Creating the images for your video...")
+    clips: List[Path] = []
+    durations: List[float] = []
+    for i, sc in enumerate(scenes, 1):
+        job["message"] = f"Creating image {i} of {n}..."
+        _progress(job, "imagining", top=(i - 1) / n, hg=(i - 1) / n)  # no HeyGen part: clips fill the bar
+        img = await asyncio.to_thread(_render_image, sc["visual"], "9:16", STUDIO_DIR / f"{job_id}_scene{i}.png",
+                                      f"clip {i} image")
+        if not img:
+            raise RuntimeError(f"All image models failed for clip {i}")
+        secs = float(sc["seconds"])
+        job["message"] = f"Animating clip {i} of {n} with Wan 2.6 Flash..."
+        _progress(job, "animating", top=(i - 0.5) / n, hg=(i - 0.5) / n)
+        try:
+            clip = await asyncio.to_thread(split_video.wan_clip, img, f"{sc.get('motion', '')}. {sc['visual']}",
+                                           secs, STUDIO_DIR / f"{job_id}_clip{i}.mp4", res)
+        except Exception as e:
+            logger.warning(f"Wan unavailable for clip {i}, using free zoom instead: {e}")
+            clip = await asyncio.to_thread(split_video.kenburns_clip, img, secs + 0.5,
+                                           STUDIO_DIR / f"{job_id}_kb{i}.mp4", i, split_video.H)
+        clips.append(clip)
+        durations.append(secs)
+        _progress(job, top=i / n, hg=i / n)
+    track = music.find(job.get("music_id"))
+    audio = await asyncio.to_thread(music.audio_file, track) if track else None
+    job["message"] = "Putting the clips together..."
+    _progress(job, "stitching", post=0.5)
+    name = f"{job_id}.mp4"
+    await asyncio.to_thread(split_video.compose_full, clips, durations, STUDIO_DIR / name,
+                            STUDIO_DIR / f"{job_id}_work", [s.get("caption", "") for s in scenes], audio)
+    return name, sum(durations)
+
+
+async def _make_clone(job: Dict[str, Any]) -> tuple:
+    from src.video import split_video
+    job_id = job["id"]
     avatar_task = None
     try:
         hg = await resolve_heygen()  # fail fast (bad key / no avatar) before spending anything
@@ -563,6 +832,8 @@ async def _build(job_id: str) -> None:
             look = next((a for a in await list_avatars() if a["id"] == job["avatar_id"]), {})
             hg = {**hg, "avatar_id": job["avatar_id"],
                   "voice_id": heygen_env()["voice_id"] or look.get("voice_id") or hg["voice_id"]}
+        if job.get("voice_id"):  # the voice he picked in the app wins
+            hg = {**hg, "voice_id": job["voice_id"]}
         plan = job["plan"]
         plan["scenes"] = _drop_cta(plan["scenes"]) or plan["scenes"]
         script = " ".join(s["spoken"] for s in plan["scenes"])
@@ -601,42 +872,165 @@ async def _build(job_id: str) -> None:
         _progress(job, "finishing", post=0.6)
         await asyncio.to_thread(split_video.compose, clips, durations, avatar, STUDIO_DIR / name,
                                 STUDIO_DIR / f"{job_id}_work", script)
-        job["caption"] = await make_caption(plan)  # editable in the app before posting
-        job.update(status="done", message="Your video is ready.", file=name, url=f"/api/v1/studio/files/{name}",
-                   duration=round(total, 1), usage=await costs.summary(ledger), progress=100, stage="done")
-        _save_job(job)
-    except asyncio.CancelledError:  # he pressed Cancel during the render
+        return name, total
+    finally:  # cancelled or failed: stop the HeyGen wait too
         if avatar_task and not avatar_task.done():
             avatar_task.cancel()
-        job.update(status="cancelled", message="Render cancelled. Nothing more will be created; "
-                   "anything already started was charged (see below).", usage=await costs.summary(ledger))
-        _save_job(job)
-    except Exception as e:
-        logger.error(f"Studio job {job_id} failed: {e}")
-        job.update(status="failed", message=str(e)[:300], usage=await costs.summary(ledger))  # what was spent anyway
-        _save_job(job)
-    finally:
-        _build_tasks.pop(job_id, None)
 
 
-async def start_video_job(plan: Dict[str, Any]) -> Dict[str, Any]:
+# ----------------------------------------------------------------------------- voice preview
+# He listens to his cloned voice BEFORE paying for the video: HeyGen TTS makes one audio file per clip (a bad
+# sentence can be redone on its own), the clips are joined, and on Render HeyGen only lip-syncs to that audio.
+VOICE_GAP = 0.25  # s of silence between clips (a natural breath)
+
+
+async def _tts(client: httpx.AsyncClient, voice_id: str, text: str) -> bytes:
+    """HeyGen Voice TTS (works with his own clone) -> WAV bytes."""
+    from src.video.split_video import AVATAR_SPEED
+    import random
+    r = await client.post(f"{HEYGEN}/v3/models/audio/tts", headers=_headers(),
+                          json={"voice_id": voice_id, "text": text, "speed": AVATAR_SPEED,
+                                "seed": random.randint(1, 10 ** 6)})  # new seed: a redo sounds different
+    if r.status_code != 200:
+        raise RuntimeError(f"HeyGen voice error {r.status_code}: {r.text[:300]}")
+    url = (r.json().get("data") or {}).get("audio_url")
+    if not url:
+        raise RuntimeError(f"HeyGen returned no audio: {r.text[:200]}")
+    return (await client.get(url)).content
+
+
+def _join_voice(job_id: str, parts: List[Path]) -> Path:
+    """Clips -> one 48 kHz WAV with short pauses; sped up 10% only if HeyGen ignored the speed setting."""
+    from src.video import split_video as sv
+    out = STUDIO_DIR / f"{job_id}_voice.wav"
+    inputs, labels = [], []
+    for i, p in enumerate(parts):
+        inputs += ["-i", str(p)]
+        labels.append(f"[{i}:a]aresample=48000,aformat=channel_layouts=mono,apad=pad_dur={VOICE_GAP}[a{i}]")
+    chain = ";".join(labels) + ";" + "".join(f"[a{i}]" for i in range(len(parts))) + \
+        f"concat=n={len(parts)}:v=0:a=1[v]"
+    sv._run([*inputs, "-filter_complex", chain, "-map", "[v]", "-c:a", "pcm_s16le", str(out)])
+    return out
+
+
+async def make_voice(job_id: str, clip: Optional[int] = None, voice_id: Optional[str] = None) -> Dict[str, Any]:
+    """Voice preview for every clip (clip=None) or a redo of one clip (1-based), in the voice he picked
+    (voice_id; else the job's / the default one). Raises ValueError/KeyError."""
+    from src.video import split_video as sv
+    job = _load_jobs().get(job_id)
+    if not job:
+        raise KeyError(job_id)
+    if job["status"] != "awaiting_approval" or job.get("video_type") == "normal":
+        raise ValueError("The voice can only be made for a clone video before Render.")
+    hg = await resolve_heygen()
+    if voice_id:
+        job["voice_id"] = voice_id
+    hg = {**hg, "voice_id": job.get("voice_id") or hg["voice_id"]}
+    scenes = job["plan"]["scenes"]
+    voice = job.get("voice") or {}
+    files = voice.get("files") or [None] * len(scenes)
+    if voice.get("voice_id") != hg["voice_id"]:  # another voice picked: every clip is made again
+        files = [None] * len(scenes)
+    if clip is None or len(files) != len(scenes) or None in files:
+        todo = list(range(len(scenes)))
+    elif 1 <= clip <= len(scenes):
+        todo = [clip - 1]
+    else:
+        raise ValueError(f"Clip {clip} doesn't exist")
+    stamp = int(time.time())
+    async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+        for i in todo:
+            path = STUDIO_DIR / f"{job_id}_voice{i + 1}_{stamp}.wav"  # new name: the app never plays a cached old take
+            path.write_bytes(await _tts(client, hg["voice_id"], scenes[i]["spoken"]))
+            files[i] = path.name
+    parts = [STUDIO_DIR / f for f in files]
+    joined = await asyncio.to_thread(_join_voice, job_id, parts)
+    total = sv.media_duration(joined)
+    words = sum(len(s["spoken"].split()) for s in scenes)
+    if words / max(0.1, total) < WORDS_PER_SECOND * 0.92:  # the clone ignored the speed: make it 10% faster here
+        fast = STUDIO_DIR / f"{job_id}_voice_fast.wav"
+        await asyncio.to_thread(sv._run, ["-i", str(joined), "-af", f"atempo={sv.AVATAR_SPEED}", str(fast)])
+        fast.replace(joined)
+        total = sv.media_duration(joined)
+    final = STUDIO_DIR / f"{job_id}_voice_{stamp}.wav"
+    joined.replace(final)
+    job = _load_jobs()[job_id]  # fresh copy (he may have done something meanwhile)
+    job["voice_id"] = hg["voice_id"]
+    job["voice"] = {"files": files, "file": final.name, "duration": round(total, 1), "voice_id": hg["voice_id"],
+                    "clips": [{"text": s["spoken"], "url": f"/api/v1/studio/files/{f}"} for s, f in zip(scenes, files)],
+                    "url": f"/api/v1/studio/files/{final.name}"}
+    job["estimate"] = estimate_cost({**job["plan"], "duration_sec": total})
+    _save_job(job)
+    return {"voice": job["voice"], "estimate": job["estimate"]}
+
+
+async def _upload_audio(client: httpx.AsyncClient, path: Path) -> str:
+    """Uploads his approved voice to HeyGen -> audio_asset_id for the avatar video."""
+    with open(path, "rb") as f:
+        r = await client.post(f"{HEYGEN}/v3/assets", headers=_headers(), files={"file": (path.name, f, "audio/wav")})
+    if r.status_code != 200 or not (r.json().get("data") or {}).get("id"):
+        raise RuntimeError(f"HeyGen audio upload failed {r.status_code}: {r.text[:300]}")
+    return r.json()["data"]["id"]
+
+
+def _public(job: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in job.items() if k != "plan" and not k.startswith("_")}
+
+
+async def start_video_job(plan: Dict[str, Any], news_id: Optional[str] = None) -> Dict[str, Any]:
     """Creates the job WAITING FOR APPROVAL: nothing paid runs until he taps Render (approve_job)."""
-    job = {"id": uuid.uuid4().hex[:12], "kind": "video", "plan": plan, "status": "awaiting_approval",
-           "estimate": estimate_cost(plan), "message": "Review the plan, then tap Render.", "created": time.time()}
-    reason = heygen_ready()
+    job = {"id": uuid.uuid4().hex[:12], "kind": "video", "video_type": plan.get("type", "clone"), "plan": plan,
+           "news_id": news_id, "status": "awaiting_approval", "estimate": estimate_cost(plan),
+           "message": "Review the plan, then tap Render.", "created": time.time()}
+    reason = heygen_ready() if job["video_type"] == "clone" else None
     if reason:
         job.update(status="failed", message=f"HeyGen isn't set up: {reason}.")
     _save_job(job)
     return job
 
 
-async def approve_job(job_id: str, avatar_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_plan(job_id: str) -> Optional[Dict[str, Any]]:
+    job = _load_jobs().get(job_id)
+    return {"plan": job["plan"], "status": job["status"], "estimate": job.get("estimate")} if job else None
+
+
+def update_plan(job_id: str, scenes: List[Dict[str, Any]], title: Optional[str] = None) -> Dict[str, Any]:
+    """His edits to the clips (what he says / what's shown / clip length), only before Render.
+    Timings and the cost estimate are recalculated. Raises KeyError / ValueError."""
+    job = _load_jobs().get(job_id)
+    if not job:
+        raise KeyError(job_id)
+    if job["status"] != "awaiting_approval":
+        raise ValueError("The plan can only be edited before you tap Render.")
+    plan = job["plan"]
+    plan["scenes"] = clean_scenes(plan.get("type", "clone"), scenes)
+    if title and title.strip():
+        plan["title"] = title.strip()[:100]
+    if plan.get("type") != "normal":
+        plan["hook"] = plan["scenes"][0]["spoken"]
+    retime(plan)
+    if job.get("voice") and [s.get("spoken") for s in plan["scenes"]] != [c["text"] for c in job["voice"]["clips"]]:
+        job.pop("voice")  # the words changed: the voice preview has to be made again
+    job["estimate"] = estimate_cost(plan)
+    job["edited"] = time.time()
+    _save_job(job)
+    return {"plan": plan, "markdown": plan_markdown(plan), "estimate": job["estimate"], "voice": job.get("voice")}
+
+
+async def approve_job(job_id: str, avatar_id: Optional[str] = None, music_id: Optional[str] = None,
+                      voice_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     job = _load_jobs().get(job_id)
     if not job:
         return None
     if job["status"] == "awaiting_approval":
         if avatar_id:
             job["avatar_id"] = avatar_id
+        if voice_id:
+            job["voice_id"] = voice_id
+            if job.get("voice") and job["voice"].get("voice_id") != voice_id:
+                job.pop("voice")  # the preview was another voice: HeyGen speaks the script in the picked voice
+        if music_id:
+            job["music_id"] = music_id
         job.update(status="queued", message="Starting...", approved=time.time(), progress=0, stage="starting")
         _save_job(job)
         _build_tasks[job_id] = asyncio.create_task(_build(job_id))
@@ -691,7 +1085,7 @@ async def _cli_check() -> None:
 
 
 def studio_file(name: str) -> Optional[Path]:
-    if not re.fullmatch(r"[A-Za-z0-9_]+\.(mp4|png|jpg)", name):
+    if not re.fullmatch(r"[A-Za-z0-9_]+\.(mp4|png|jpg|wav)", name):
         return None
     path = STUDIO_DIR / name
     return path if path.exists() else None

@@ -1,11 +1,11 @@
 """Split-screen 9:16 composer for Alfred Studio.
 
 Final frame (1080x1920):
-  top 65%     : content video (Wan 2.6 Flash / Omni Flash image-to-video, or a free FFmpeg zoom/pan)
-  bottom 35%  : his HeyGen avatar clone (one continuous take; his voice is the video's audio)
+  top 55%     : content video (Wan 2.6 Flash / Omni Flash image-to-video, or a free FFmpeg zoom/pan)
+  bottom 45%  : his HeyGen avatar clone (one continuous take; his voice is the video's audio)
   split line  : the two parts overlap by BLEND px and cross-fade, so there is no hard edge
   subtitles   : short 2-4 word captions just above the clone (white bold, thin black outline, key word in yellow, no box)
-  edges       : a soft fade to deep black at the very top and bottom
+  edges       : clean top and bottom edges (EDGE_FADE = 0; set it > 0 for a fade to black)
 """
 
 import base64
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 W, H = 1080, 1920
 FPS = 25
 BLEND = 140            # px of cross-fade around the split line
-EDGE_FADE = 70         # px fade to black at the very top / bottom
-BOTTOM_RATIO = 0.35    # his clone takes the bottom 35% of the frame
+EDGE_FADE = 0          # px fade to black at the very top / bottom (0 = off: clean edges)
+BOTTOM_RATIO = 0.45    # his clone takes the bottom 45% of the frame (content: top 55%)
 PART_H = 1040          # working height for free zoom/pan clips (re-scaled by compose)
 
 FONT_PATHS = ["C:/Windows/Fonts/seguibl.ttf", "C:/Windows/Fonts/ariblk.ttf", "C:/Windows/Fonts/arialbd.ttf"]
@@ -36,7 +36,7 @@ CAPTION_STROKE = 5                       # thin black outline around each letter
 AVATAR_SPEED = 1.10                      # HeyGen voice speed: he talks 10% faster (sent as voice_settings.speed)
 HEAD_MOTION_KEEP = 0.10                  # keep 10% of his quick head nods (0 = none, 1 = untouched)
 STEADY_HEAD = False                      # off: HeyGen's own head motion looks more natural than steadying it
-FACE_SHARE = 0.34                        # his face fills ~34% of the clone strip's height (head + shoulders)
+FACE_SHARE = 0.0                         # 0 = least zoom that fills the strip (head, shoulders and chest); 0.34 = face close-up
 HEAD_GAP = 30                            # px between the top of his hair and the end of the top cross-fade
 STOPWORDS = {"a", "an", "the", "this", "that", "these", "those", "is", "are", "was", "were", "be", "to", "of",
              "and", "or", "for", "in", "on", "at", "it", "its", "i", "i'm", "you", "your", "we", "my", "me",
@@ -91,13 +91,14 @@ def _mask(path: Path, height: int, fade_bottom: bool) -> Path:
 
 
 # ----------------------------------------------------------------------------- top-half engines
-def kenburns_clip(image: Path, seconds: float, out: Path, index: int = 0) -> Path:
+def kenburns_clip(image: Path, seconds: float, out: Path, index: int = 0, height: int = PART_H) -> Path:
     """Free fallback: a slow zoom (alternating in/out per clip) over the scene image."""
     frames = max(1, int(round(seconds * FPS)))
     zoom = f"1+0.10*on/{frames}" if index % 2 == 0 else f"1.10-0.10*on/{frames}"
     _run(["-loop", "1", "-t", f"{seconds:.3f}", "-i", str(image),
-          "-vf", (f"scale={W * 2}:-2,zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                  f":d=1:s={W}x{PART_H}:fps={FPS},format=yuv420p"),
+          "-vf", (f"scale={W * 2}:{height * 2}:force_original_aspect_ratio=increase,crop={W * 2}:{height * 2},"
+                  f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                  f":d=1:s={W}x{height}:fps={FPS},format=yuv420p"),
           "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", str(out)])
     return out
 
@@ -497,10 +498,89 @@ def render_caption(text: str, path: Path) -> Path:
 
 
 # ----------------------------------------------------------------------------- composer
+def _top_track(clips: List[Path], durations: List[float], top_h: int, work: Path) -> Path:
+    """Each content clip cover-scaled to the top part and cut to its scene (looped if short), one FFmpeg
+    run per clip, then joined without re-encoding. Frame counts are cumulative so the track stays in sync."""
+    cover = f"scale={W}:{top_h}:force_original_aspect_ratio=increase,crop={W}:{top_h},setsar=1,fps={FPS}"
+    segs, t = [], 0.0
+    for i, (clip, d) in enumerate(zip(clips, durations)):
+        frames = round((t + d) * FPS) - round(t * FPS)
+        t += d
+        seg = work / f"top{i}.mp4"
+        _run(["-stream_loop", "-1", "-i", str(clip), "-vf", cover, "-frames:v", str(max(1, frames)), "-an",
+              "-c:v", "libx264", "-preset", "fast", "-crf", "16", "-pix_fmt", "yuv420p", str(seg)])
+        segs.append(seg)
+    lst = work / "top.txt"
+    lst.write_text("".join(f"file '{s.as_posix()}'\n" for s in segs), encoding="utf-8")
+    out = work / "top.mp4"
+    _run(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(out)])
+    return out
+
+
+def _caption_track(captions: List[Tuple[float, float, str]], total: float, work: Path) -> Path:
+    """All captions as ONE timed image sequence (FFmpeg concat list): every caption centred on a
+    full-width transparent canvas, with blank canvases in the gaps."""
+    imgs = [Image.open(render_caption(text, work / f"cap{k}.png")) for k, (_, _, text) in enumerate(captions)]
+    ch = max([im.height for im in imgs] or [2])
+    blank = work / "cap_blank.png"
+    Image.new("RGBA", (W, ch), (0, 0, 0, 0)).save(blank)
+    entries, t = [], 0.0
+    for k, ((start, end, _), im) in enumerate(zip(captions, imgs)):
+        if start > t + 0.001:
+            entries.append((blank, start - t))
+        canvas = Image.new("RGBA", (W, ch), (0, 0, 0, 0))
+        canvas.alpha_composite(im.convert("RGBA").crop((0, 0, min(im.width, W), im.height)),
+                               (max(0, (W - im.width) // 2), ch - im.height))
+        p = work / f"capw{k}.png"
+        canvas.save(p)
+        entries.append((p, end - max(start, t)))
+        t = end
+    entries.append((blank, max(0.04, total - t)))
+    lst = work / "captions.txt"
+    lst.write_text("ffconcat version 1.0\n" + "".join(f"file '{p.as_posix()}'\nduration {d:.3f}\n"
+                                                      for p, d in entries) + f"file '{blank.as_posix()}'\n",
+                   encoding="utf-8")
+    return lst
+
+
+def compose_full(clips: List[Path], durations: List[float], out: Path, work: Path,
+                 texts: Optional[List[str]] = None, audio: Optional[Path] = None) -> Path:
+    """Normal (no-avatar) video: the clips full screen 9:16, each clip's on-screen text as captions in the
+    lower third, and background music (faded in/out) or a silent track."""
+    work.mkdir(parents=True, exist_ok=True)
+    total = sum(durations)
+    track = _top_track(clips, durations, H, work)
+    captions: List[Tuple[float, float, str]] = []
+    t = 0.0
+    for d, text in zip(durations, texts or []):
+        chunks = caption_chunks(text) if text and text.strip() else []
+        for k, c in enumerate(chunks):  # long texts are split into short lines over the clip
+            captions.append((t + d * k / len(chunks), t + d * (k + 1) / len(chunks), c))
+        t += d
+    args, f = ["-i", str(track)], []
+    if captions:
+        args += ["-f", "concat", "-safe", "0", "-i", str(_caption_track(captions, total, work))]
+        f.append(f"[1:v]fps={FPS},format=rgba[cap]")
+        f.append(f"[0:v][cap]overlay=0:{int(H * 0.78)}-h:format=auto:eof_action=repeat,format=yuv420p[v]")
+    else:
+        f.append("[0:v]format=yuv420p[v]")
+    ai = 2 if captions else 1
+    if audio:
+        args += ["-i", str(audio)]
+        f.append(f"[{ai}:a]afade=t=in:d=0.8,afade=t=out:st={max(0.0, total - 1.5):.2f}:d=1.5[a]")
+    else:
+        args += ["-f", "lavfi", "-t", f"{total:.3f}", "-i", "anullsrc=r=44100:cl=stereo"]
+        f.append(f"[{ai}:a]anull[a]")
+    _run([*args, "-filter_complex", ";".join(f), "-map", "[v]", "-map", "[a]", "-t", f"{total:.3f}",
+          "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k",
+          "-movflags", "+faststart", str(out)])
+    return out
+
+
 def compose(top_clips: List[Path], durations: List[float], avatar: Path, out: Path, work: Path,
             script: str = "", bottom_ratio: float = BOTTOM_RATIO) -> Path:
-    """Content clips on top (65%), the avatar take on the bottom (35%), cross-faded at the split,
-    captions just above the clone, deep-black fades at the outer edges."""
+    """Content clips on top (55%), the avatar take on the bottom (45%), cross-faded at the split,
+    captions just above the clone, clean outer edges."""
     work.mkdir(parents=True, exist_ok=True)
     split, top_h, bot_h = _layout(bottom_ratio)
     top_mask = _mask(work / "mask_top.png", top_h, fade_bottom=True)
@@ -508,20 +588,15 @@ def compose(top_clips: List[Path], durations: List[float], avatar: Path, out: Pa
     captions = caption_timeline(script, avatar) if script else []
 
     total = sum(durations)
-    args: List[str] = []
-    for clip, d in zip(top_clips, durations):  # loop a clip if it's shorter than its scene, cut if longer
-        args += ["-stream_loop", "-1", "-t", f"{d:.3f}", "-i", str(clip)]
-    n = len(top_clips)
-    args += ["-i", str(avatar), "-loop", "1", "-i", str(top_mask), "-loop", "1", "-i", str(bot_mask)]
-    ia, itm, ibm = n, n + 1, n + 2
-    cap_inputs = []
-    for k, (_, _, text) in enumerate(captions):
-        args += ["-loop", "1", "-i", str(render_caption(text, work / f"cap{k}.png"))]
-        cap_inputs.append(n + 3 + k)
+    # Memory: one big graph with every clip + every caption as its own input ran out of RAM (FFmpeg -12).
+    # So the top track and the captions are each pre-built as ONE file, and the final graph has 5 inputs.
+    top_track = _top_track(top_clips, durations, top_h, work)
+    cap_list = _caption_track(captions, total, work)
+    args = ["-i", str(top_track), "-i", str(avatar), "-loop", "1", "-i", str(top_mask),
+            "-loop", "1", "-i", str(bot_mask), "-f", "concat", "-safe", "0", "-i", str(cap_list)]
+    ia, itm, ibm, icap = 1, 2, 3, 4
 
-    cover = f"scale={W}:{top_h}:force_original_aspect_ratio=increase,crop={W}:{top_h},setsar=1,fps={FPS}"
-    f = [f"[{i}:v]{cover},trim=duration={durations[i]:.3f},setpts=PTS-STARTPTS[t{i}]" for i in range(n)]
-    f.append("".join(f"[t{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[topraw]")
+    f = [f"[0:v]setpts=PTS-STARTPTS[topraw]"]
     f.append(f"[{itm}:v]format=gray,trim=duration={total:.3f}[mt]")
     f.append("[topraw]format=rgba[topa];[topa][mt]alphamerge[top]")
     # Clone: his face centred, head + shoulders, hair clear of the cross-fade (see _clone_filter).
@@ -530,14 +605,10 @@ def compose(top_clips: List[Path], durations: List[float], avatar: Path, out: Pa
     f.append("[bot0][mb]alphamerge[bot]")
     f.append(f"color=c=black:s={W}x{H}:r={FPS}:d={total:.3f},format=rgba[bg]")
     f.append(f"[bg][bot]overlay=0:{H - bot_h}:shortest=1:format=auto[b1]")
-    last = "b2"
-    f.append(f"[b1][top]overlay=0:0:shortest=1:format=auto[{last}]")
-    for k, ((start, end, _), idx) in enumerate(zip(captions, cap_inputs)):
-        nxt = f"c{k}"
-        f.append(f"[{last}][{idx}:v]overlay=(W-w)/2:{split - 30}-h:shortest=1:format=auto:"
-                 f"enable='between(t,{start:.3f},{end:.3f})'[{nxt}]")
-        last = nxt
-    f.append(f"[{last}]format=yuv420p[v]")
+    f.append(f"[b1][top]overlay=0:0:shortest=1:format=auto[b2]")
+    f.append(f"[{icap}:v]fps={FPS},format=rgba[cap]")
+    f.append(f"[b2][cap]overlay=0:{split - 30}-h:format=auto:eof_action=repeat[b3]")
+    f.append("[b3]format=yuv420p[v]")
 
     _run([*args, "-filter_complex", ";".join(f), "-map", "[v]", "-map", f"{ia}:a?",
           "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "medium", "-crf", "18",

@@ -1,5 +1,6 @@
 """Data models for prioritized AI news items and pipeline results."""
 
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
@@ -44,6 +45,37 @@ class PrioritizedNewsItem(BaseModel):
     shown_at: Optional[datetime] = Field(default=None, description="When this story was first shown to the user in a digest")
     origin: str = Field(default="Official feed", description="Where the story came from: Official feed, Gemini + Google Search, or both")
     source_name: str = Field(default="", description="Publisher / feed name, e.g. OpenAI Official or TechCrunch")
+
+    def source_note(self) -> str:
+        """Caption lines naming where the news came from (with the link) and when it was published.
+        No published time from the feed: the date in the link (/2026/10/30/) is used if there is one."""
+        url = next((u for u in self.source_urls if u.startswith("http")), "")
+        name = self.source_name or (f"@{self.primary_source_handle.lstrip('@')}" if self.primary_source_handle else "")
+        when = self.published_at
+        if not when and url:
+            m = re.search(r"/(20\d\d)/(\d{1,2})/(\d{1,2})/", url)
+            if m:
+                try:
+                    when = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                except ValueError:
+                    when = None
+        lines = []
+        if name or url:
+            lines.append("📰 Source: " + " · ".join(p for p in (name, url) if p))
+        if when:
+            lines.append(f"🗓️ Published: {when.day} {when.strftime('%b %Y')}")
+        return "\n".join(lines)
+
+
+def with_source(caption: str, note: str) -> str:
+    """Puts the source lines before the hashtag line (or at the end), unless they're already there."""
+    caption = (caption or "").rstrip()
+    if not note or "📰 Source:" in caption:
+        return caption
+    lines = caption.split("\n")
+    if lines and lines[-1].strip().startswith("#"):
+        return "\n".join(lines[:-1]).rstrip() + f"\n\n{note}\n\n{lines[-1].strip()}"
+    return f"{caption}\n\n{note}"
 
 
 class NewsRankingResult(BaseModel):

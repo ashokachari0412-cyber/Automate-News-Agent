@@ -39,7 +39,16 @@ class MainActivity : Activity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
+            settings.setSupportMultipleWindows(false) // target="_blank" links go through shouldOverrideUrlLoading
             webViewClient = object : WebViewClient() {
+                // Links to other sites (e.g. "view" on a published post) open in their app or the browser,
+                // so Alfred itself never navigates away.
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    val host = request.url.host ?: return false
+                    if (prefs.routes().any { Uri.parse(it).host == host }) return false
+                    return try { startActivity(Intent(Intent.ACTION_VIEW, request.url)); true } catch (e: Exception) { false }
+                }
+
                 override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler, host: String, realm: String) {
                     handler.proceed("alfred", prefs.password) // the studio's APP_PASSWORD basic auth
                 }
