@@ -5,8 +5,8 @@ Video pipeline (nothing paid runs until he taps "Render"):
   2. Each clip gets a square 1:1 image (the top part is about square) from the image models (Nano Banana, Flux fallback).
   3. In parallel:  HeyGen (Avatar III) renders ONE continuous take of him saying the whole script,
                    and each image becomes a short content clip (Gemini Omni Flash, or a free FFmpeg zoom).
-  4. Clip lengths are synced to his real voice, then FFmpeg stacks: content on the top 55%, his clone on the
-     bottom 45%, subtitles just above the clone, cross-faded in the middle with no hard edge, clean top and bottom edges.
+  4. Clip lengths are synced to his real voice, then FFmpeg stacks: content on the top 60%, his clone on the
+     bottom 40%, subtitles just above the clone, cross-faded in the middle with no hard edge, clean top and bottom edges.
 """
 
 import asyncio
@@ -642,14 +642,9 @@ async def _heygen_take(client: httpx.AsyncClient, hg: Dict[str, Any], script: st
     body = {"type": "avatar", "avatar_id": hg["avatar_id"],
             "engine": {"type": hg["engine"]}, "aspect_ratio": "16:9", "fit": "cover", "resolution": "1080p",
             "title": f"Alfred: {job['plan']['title'][:60]}"}
-    voice = job.get("voice") or {}
-    if voice.get("file") and (STUDIO_DIR / voice["file"]).exists():
-        # He approved the voice preview: HeyGen only lip-syncs to that exact audio (no new voice, no surprises).
-        job["message"] = "Uploading your approved voice to HeyGen..."
-        body["audio_asset_id"] = await _upload_audio(client, STUDIO_DIR / voice["file"])
-    else:
-        # HeyGen speaks faster itself and animates the lips to it at full frame rate (no dropped frames)
-        body.update(voice_id=hg["voice_id"], script=script, voice_settings={"speed": AVATAR_SPEED})
+    # HeyGen always speaks the script itself in his voice: it then knows every sound's timing and the lips
+    # match (0 ms). Uploading our own audio instead gave loose lip sync (mouth open in pauses), so never do that.
+    body.update(voice_id=hg["voice_id"], script=script, voice_settings={"speed": AVATAR_SPEED})
     r = await client.post(f"{HEYGEN}/v3/videos", headers=_headers(), json=body)
     if r.status_code != 200:
         raise RuntimeError(f"HeyGen error {r.status_code}: {r.text[:300]}")
@@ -879,8 +874,8 @@ async def _make_clone(job: Dict[str, Any]) -> tuple:
 
 
 # ----------------------------------------------------------------------------- voice preview
-# He listens to his cloned voice BEFORE paying for the video: HeyGen TTS makes one audio file per clip (a bad
-# sentence can be redone on its own), the clips are joined, and on Render HeyGen only lip-syncs to that audio.
+# Optional: he can hear the picked voice BEFORE paying for the video (HeyGen TTS, one file per clip). It is only
+# a preview: on Render HeyGen speaks the script itself in that voice, so the lips stay in sync.
 VOICE_GAP = 0.25  # s of silence between clips (a natural breath)
 
 
@@ -962,15 +957,6 @@ async def make_voice(job_id: str, clip: Optional[int] = None, voice_id: Optional
     job["estimate"] = estimate_cost({**job["plan"], "duration_sec": total})
     _save_job(job)
     return {"voice": job["voice"], "estimate": job["estimate"]}
-
-
-async def _upload_audio(client: httpx.AsyncClient, path: Path) -> str:
-    """Uploads his approved voice to HeyGen -> audio_asset_id for the avatar video."""
-    with open(path, "rb") as f:
-        r = await client.post(f"{HEYGEN}/v3/assets", headers=_headers(), files={"file": (path.name, f, "audio/wav")})
-    if r.status_code != 200 or not (r.json().get("data") or {}).get("id"):
-        raise RuntimeError(f"HeyGen audio upload failed {r.status_code}: {r.text[:300]}")
-    return r.json()["data"]["id"]
 
 
 def _public(job: Dict[str, Any]) -> Dict[str, Any]:

@@ -25,7 +25,7 @@ W, H = 1080, 1920
 FPS = 25
 BLEND = 140            # px of cross-fade around the split line
 EDGE_FADE = 0          # px fade to black at the very top / bottom (0 = off: clean edges)
-BOTTOM_RATIO = 0.45    # his clone takes the bottom 45% of the frame (content: top 55%)
+BOTTOM_RATIO = 0.40    # his clone takes the bottom 40% of the frame (content: top 60%)
 PART_H = 1040          # working height for free zoom/pan clips (re-scaled by compose)
 
 FONT_PATHS = ["C:/Windows/Fonts/seguibl.ttf", "C:/Windows/Fonts/ariblk.ttf", "C:/Windows/Fonts/arialbd.ttf"]
@@ -579,7 +579,7 @@ def compose_full(clips: List[Path], durations: List[float], out: Path, work: Pat
 
 def compose(top_clips: List[Path], durations: List[float], avatar: Path, out: Path, work: Path,
             script: str = "", bottom_ratio: float = BOTTOM_RATIO) -> Path:
-    """Content clips on top (55%), the avatar take on the bottom (45%), cross-faded at the split,
+    """Content clips on top (60%), the avatar take on the bottom (40%), cross-faded at the split,
     captions just above the clone, clean outer edges."""
     work.mkdir(parents=True, exist_ok=True)
     split, top_h, bot_h = _layout(bottom_ratio)

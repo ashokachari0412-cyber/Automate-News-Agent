@@ -1279,7 +1279,7 @@
   }
 
   // Clone videos: hear the cloned voice before paying for the video. Each clip can be redone on its own;
-  // Render then makes HeyGen lip-sync to exactly this audio. onState(ready, failed) unlocks Render.
+  // Only a preview: on Render HeyGen speaks the script itself in this voice (lips in sync). Optional.
   function buildVoicePreview(jobId, voice, onState, getVoiceId = () => null) {
     const el = document.createElement("div");
     el.className = "voice-preview";
@@ -1288,7 +1288,7 @@
     const render = (v) => {
       el.innerHTML = "";
       if (!v) {
-        el.innerHTML = `<div class="format-choice-title">Listen to your voice first</div>`;
+        el.innerHTML = `<div class="format-choice-title">Want to hear the voice first? (optional)</div>`;
         const row = document.createElement("div");
         row.className = "msg-actions";
         row.appendChild(makeButton("🎙 Make voice preview", true, (btn) => run(null, btn)));
@@ -1297,7 +1297,7 @@
         onState(false, false);
         return;
       }
-      el.innerHTML = `<div class="format-choice-title">Your voice · ${v.duration} s · this exact audio goes to HeyGen</div>`;
+      el.innerHTML = `<div class="format-choice-title">Your voice · ${v.duration} s · preview only: HeyGen speaks it fresh on Render, so the lips match</div>`;
       const full = document.createElement("audio");
       full.controls = true;
       full.preload = "none";
@@ -1686,10 +1686,10 @@
             row.appendChild(go);
             row.appendChild(edit);
             row.appendChild(cancel);
-            if (!normal) {  // Render unlocks once he has heard the voice (or if the preview can't be made)
+            if (!normal) {  // the voice preview is optional: Render is always available
               voicePanel = buildVoicePreview(jobId, job.voice, (ready, failed, est) => {
-                go.disabled = !(ready || failed);
-                go.textContent = ready ? "Render video" : failed ? "Render anyway" : "Render video (hear the voice first)";
+                go.disabled = false;
+                go.textContent = "Render video";
                 if (est) statusMsg().textContent = estimateLine(est);
               }, () => (voices ? voices.selected() : null));
               box.appendChild(voicePanel.el);
