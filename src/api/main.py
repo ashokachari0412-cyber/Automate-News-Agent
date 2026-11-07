@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -33,7 +33,7 @@ from src import costs, music, progress, storage
 from src.google_workspace import auth as google_auth
 from src.google_workspace.agent import is_workspace_query, run_workspace_agent
 from src.google_workspace.router import router as google_router
-from src import monitor, studio
+from src import monitor, shared_post, studio
 from src.video.carousel_generator import CarouselGenerator
 from src.video.generator import VideoGenerator
 
@@ -186,6 +186,8 @@ class AlfredChatRequest(BaseModel):
     image_count: Optional[int] = None  # mode "news_images": how many images (1 = single post, 2-6 = carousel)
     brand: Optional[str] = None  # mode "news_images" with 1 image: "instagram" | "linkedin"
     prompts: Optional[List[str]] = None  # mode "custom_image": his (edited) prompts for a set of images
+    share_image: Optional[str] = None  # mode "shared_post": id of a screenshot shared to the app
+    reference: Optional[bool] = None  # the text is a reference (a shared post): write his own take, never keep its words
 
 
 class CreatorsRequest(BaseModel):
@@ -391,6 +393,26 @@ async def studio_avatars(refresh: bool = False):
         return {"avatars": await studio.list_avatars(refresh)}
     except Exception as e:
         return {"avatars": [], "reason": str(e)}
+
+
+_balances_cache: Dict[str, Any] = {"time": 0.0, "rows": None}
+
+
+@app.get("/api/v1/balances")
+async def account_balances(refresh: bool = False):
+    """What's left in each paid service, in INR, for the profile menu (cached 2 min)."""
+    if refresh or not _balances_cache["rows"] or time.time() - _balances_cache["time"] > 120:
+        _balances_cache.update(rows=await costs.account_balances(), time=time.time())
+    return {"services": _balances_cache["rows"], "inr_rate": costs.inr_rate()}
+
+
+@app.post("/api/v1/share/image")
+async def share_image(request: Request):
+    """A screenshot shared to the phone app (raw image bytes in the body) -> an id the chat uses."""
+    try:
+        return {"id": shared_post.save_image(await request.body(), request.headers.get("content-type", ""))}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/v1/monitor/creators")
@@ -1037,7 +1059,7 @@ async def _route_intent(message: str, history: List[Dict[str, str]]) -> Dict[str
     return _keyword_route(message.lower())
 
 
-def _ask_what_to_make(text: str, kind: Optional[str] = None) -> Dict[str, Any]:
+def _ask_what_to_make(text: str, kind: Optional[str] = None, reference: bool = False) -> Dict[str, Any]:
     """His script / idea in the chat: the app shows Image · Video · Just answer it (then image count or video type +
     length). kind "image" / "video" opens that choice straight away. Nothing paid runs until he taps."""
     words = len(text.split())
@@ -1045,6 +1067,7 @@ def _ask_what_to_make(text: str, kind: Optional[str] = None) -> Dict[str, Any]:
              "video": "What kind of video, and how long, Master Ashok?"}.get(
         kind or "", f"Got it ({words} words). What should I make from it, Master Ashok?")
     return {"reply": reply, "author": "Alfred", "action": "script_kind", "script": text, "words": words, "kind": kind,
+            "reference": reference,
             "keep_seconds": max(1, round(words / studio.WORDS_PER_SECOND)), "options": studio.VIDEO_LENGTHS}
 
 
@@ -1089,9 +1112,9 @@ async def _studio_video(brief: str, custom_script: bool = False, news_id: Option
 def _estimate_text(est: Dict[str, Any]) -> str:
     top = {"wan": "Wan 2.6 Flash", "omni_flash": "Gemini Omni Flash"}.get(est["top_engine"], "free zoom/pan")
     if est.get("type") == "normal":
-        return f"Estimated cost: about ${est['total_usd']} (images + {top} clips, no HeyGen)."
-    return (f"Estimated cost: about ${est['total_usd']} (HeyGen {est['heygen_engine']} ${est['heygen_usd']} "
-            f"+ top half {top} ${est['content_usd']}).")
+        return f"Estimated cost: about ₹{est['total_inr']} (images + {top} clips, no HeyGen)."
+    return (f"Estimated cost: about ₹{est['total_inr']} (HeyGen ₹{est['heygen_inr']} "
+            f"+ top half {top} ₹{est['content_inr']}).")
 
 
 async def _studio_image(request: str, aspect: Optional[str] = None, exact_prompt: bool = False) -> Dict[str, Any]:
@@ -1163,8 +1186,18 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     if req.mode == "chat_only":  # "Just answer it": treat his text as a normal chat message
         req.message = script
     if req.mode == "custom_video":  # Custom Script -> Video -> clone / normal -> length
-        return await _studio_video(script, custom_script=True, seconds=req.video_seconds or None,
+        # A shared post is only a reference: he gets his own script (written + researched), never its words.
+        return await _studio_video(script, custom_script=not req.reference, seconds=req.video_seconds or None,
                                    video_type="normal" if req.video_type == "normal" else "clone")
+    if req.mode == "shared_post":  # a post shared to the phone app: understand it, then ask what to make
+        info = await shared_post.read(script, req.share_image)
+        if not info.get("ok"):
+            where = info.get("platform") or "that site"
+            return {"reply": f"I couldn't read that post, Master Ashok ({where} often hides posts from apps that "
+                             "aren't logged in). Share a **screenshot** of it to Alfred, or paste the caption here, "
+                             "and I'll take it from there.", "author": "Alfred"}
+        ask = _ask_what_to_make(shared_post.brief(info), reference=True)
+        return {**ask, "reply": shared_post.reply_markdown(info)}
     if req.mode == "video_plan":
         return await _studio_video(req.video_brief or req.message, news_id=req.news_id,
                                    seconds=req.video_seconds or studio.DEFAULT_SECONDS,

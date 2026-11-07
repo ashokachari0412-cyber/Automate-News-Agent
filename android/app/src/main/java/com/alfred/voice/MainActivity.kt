@@ -19,13 +19,21 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
-/** The Alfred AI Studio web app in a full-screen WebView (main route first, backup route if it fails). */
+/** The Alfred AI Studio web app in a full-screen WebView (main route first, backup route if it fails).
+ *  Also a share target: a post / link / screenshot shared to Alfred opens the studio, which reads it and asks
+ *  what to make from it (image, avatar video or standalone video). */
 class MainActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var web: WebView
     private var loadedUrl = ""
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private var shareQuery: String? = null // "share=...&share_image=..." until the studio page has loaded it
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,6 +53,10 @@ class MainActivity : Activity() {
                     val host = request.url.host ?: return false
                     if (prefs.routes().any { Uri.parse(it).host == host }) return false
                     return try { startActivity(Intent(Intent.ACTION_VIEW, request.url)); true } catch (e: Exception) { false }
+                }
+
+                override fun onPageFinished(view: WebView, url: String) {
+                    if (url.contains("share=") || url.contains("share_image=")) shareQuery = null
                 }
 
                 override fun onReceivedHttpAuthRequest(view: WebView, handler: HttpAuthHandler, host: String, realm: String) {
@@ -80,7 +92,75 @@ class MainActivity : Activity() {
         // Settings: long-press the app icon -> Settings (no button over the chat).
         setContentView(web)
 
-        if (savedInstanceState != null) web.restoreState(savedInstanceState)
+        if (!handleShare(intent) && savedInstanceState != null) web.restoreState(savedInstanceState)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleShare(intent)
+    }
+
+    /** "Share -> Alfred" from Instagram, LinkedIn, the browser or the gallery. Returns true if it was a share. */
+    private fun handleShare(intent: Intent?): Boolean {
+        if (intent?.action != Intent.ACTION_SEND) return false
+        val text = listOfNotNull(intent.getStringExtra(Intent.EXTRA_SUBJECT), intent.getStringExtra(Intent.EXTRA_TEXT))
+            .joinToString("\n").trim()
+        @Suppress("DEPRECATION")
+        val image = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        val textPart = if (text.isNotEmpty()) "share=" + URLEncoder.encode(text, "UTF-8") else ""
+        if (image == null || intent.type?.startsWith("image/") != true) {
+            if (textPart.isEmpty()) return false
+            openShare(textPart)
+            return true
+        }
+        Toast.makeText(this, "Sending the screenshot to Alfred...", Toast.LENGTH_SHORT).show()
+        Thread {
+            val id = try { uploadImage(image) } catch (e: Exception) { null }
+            runOnUiThread {
+                if (id == null) Toast.makeText(this, "Couldn't send the screenshot", Toast.LENGTH_LONG).show()
+                val parts = listOfNotNull(textPart.ifEmpty { null }, id?.let { "share_image=$it" })
+                if (parts.isNotEmpty()) openShare(parts.joinToString("&")) else loadRoute(0)
+            }
+        }.start()
+        return true
+    }
+
+    private fun openShare(query: String) {
+        shareQuery = query
+        loadRoute(0)
+    }
+
+    /** Uploads a shared image to the studio (main route, then backup) and returns its id. */
+    private fun uploadImage(uri: Uri): String? {
+        var bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+        var type = contentResolver.getType(uri) ?: "image/jpeg"
+        if (bytes.size > 7 * 1024 * 1024) { // shrink very large images (the studio accepts up to 8 MB)
+            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+            val out = ByteArrayOutputStream()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+            bytes = out.toByteArray(); type = "image/jpeg"
+        }
+        for (base in prefs.routes()) {
+            try {
+                val conn = URL("$base/api/v1/share/image").openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                conn.setRequestProperty("Content-Type", type)
+                if (prefs.password.isNotEmpty()) {
+                    val token = Base64.encodeToString("alfred:${prefs.password}".toByteArray(), Base64.NO_WRAP)
+                    conn.setRequestProperty("Authorization", "Basic $token")
+                }
+                conn.outputStream.use { it.write(bytes) }
+                if (conn.responseCode == 200) {
+                    val body = conn.inputStream.bufferedReader().use { it.readText() }
+                    return org.json.JSONObject(body).optString("id").ifEmpty { null }
+                }
+            } catch (e: Exception) { /* try the backup route */ }
+        }
+        return null
     }
 
     override fun onResume() {
@@ -94,7 +174,8 @@ class MainActivity : Activity() {
     private fun loadRoute(index: Int) {
         routeIndex = index
         loadedUrl = prefs.routes()[index]
-        web.loadUrl(loadedUrl)
+        // A pending share rides along until the studio page has loaded it (also on the backup route).
+        web.loadUrl(shareQuery?.let { "$loadedUrl/?$it" } ?: loadedUrl)
     }
 
     /** Main route failed: try the backup route before showing the offline screen. */

@@ -271,7 +271,9 @@ def estimate_cost(plan: Dict[str, Any]) -> Dict[str, Any]:
             "wan": WAN_PER_SEC.get(top["resolution"], 0.025)}.get(engine, 0.0)
     from src.video.slide_visuals import image_price
     content = round(rate * sum(clip_secs) + image_price() * len(clip_secs), 2)
+    fx = costs.inr_rate()  # he reads costs in rupees
     return {"heygen_usd": heygen, "content_usd": content, "total_usd": round(heygen + content, 2),
+            "heygen_inr": round(heygen * fx), "content_inr": round(content * fx), "total_inr": round((heygen + content) * fx),
             "heygen_engine": None if normal else hg_engine, "top_engine": engine,
             "top_resolution": top["resolution"], "seconds": secs, "type": plan.get("type", "clone")}
 

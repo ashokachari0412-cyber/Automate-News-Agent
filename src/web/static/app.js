@@ -42,7 +42,19 @@
     newChatBtn.addEventListener("click", clearMemory);
     setupProfileMenu();
     setupGoogleButton();
-    restoreMemory();
+    restoreMemory().then(openSharedPost);
+  }
+
+  // A post shared to the phone app arrives as ?share=<text/link>&share_image=<id>: Alfred reads it and asks what to make.
+  function openSharedPost() {
+    const params = new URLSearchParams(location.search);
+    const text = (params.get("share") || "").trim();
+    const image = params.get("share_image") || "";
+    if (!text && !image) return;
+    history.replaceState(null, "", location.pathname);  // a reload must not share it again
+    if (heroSection) heroSection.classList.add("hidden");
+    sendPrompt(`📤 Shared post${text ? `\n${text}` : " (screenshot)"}`, "Reading the shared post...", "shared_post",
+      { script: text, share_image: image || null });
   }
 
   // Replays the persisted conversation (server-side memory) after a reload
@@ -60,6 +72,34 @@
   }
 
   // Profile avatar opens a small menu holding Connect Google + History
+  // What's left in each paid service, in rupees (refreshed every time the menu opens; the server caches 2 min).
+  async function loadBalances() {
+    const list = document.getElementById("balance-list");
+    try {
+      const data = await (await fetch("/api/v1/balances")).json();
+      list.innerHTML = "";
+      (data.services || []).forEach((sv) => {
+        const row = document.createElement("a");
+        row.className = "balance-row";
+        row.href = sv.link || "#";
+        row.target = "_blank";
+        row.rel = "noopener";
+        const amount = sv.inr != null ? `₹${Math.round(sv.inr).toLocaleString("en-IN")}` : (sv.note || "—");
+        row.innerHTML = `<span class="balance-name"><b></b><small></small></span><span class="balance-amount"></span>`;
+        row.querySelector("b").textContent = sv.name;
+        row.querySelector("small").textContent = sv.use;
+        const amt = row.querySelector(".balance-amount");
+        amt.textContent = amount;
+        if (sv.inr == null) amt.classList.add("muted");
+        else if (sv.inr < 100) amt.classList.add("low");  // under ₹100: time to top up
+        list.appendChild(row);
+      });
+      document.getElementById("balance-updated").textContent = data.inr_rate ? `· $1 = ₹${data.inr_rate.toFixed(2)}` : "";
+    } catch (e) {
+      list.innerHTML = `<div class="balance-row muted">Couldn't load balances</div>`;
+    }
+  }
+
   function setupProfileMenu() {
     const btn = document.getElementById("profile-btn");
     const menu = document.getElementById("profile-menu");
@@ -69,7 +109,9 @@
     };
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      setOpen(menu.classList.contains("hidden"));
+      const opening = menu.classList.contains("hidden");
+      setOpen(opening);
+      if (opening) loadBalances();
     });
     menu.addEventListener("click", (e) => {
       if (e.target.closest(".profile-menu-item")) setOpen(false);
@@ -722,19 +764,19 @@
         countSec = addRow("How many images?");
         countSec.row.appendChild(makeCountCircles(6, (n) => {
           sendPrompt(n === 1 ? "1 image" : `${n} images`, n === 1 ? "Writing the image prompt..." : `Writing ${n} image prompts...`,
-            "image_prompt", { script: data.script, image_count: n });
+            "image_prompt", { script: data.script, image_count: n, reference: !!data.reference });
         }, (n) => (n === 1 ? "1 image" : `A set of ${n} different images`)));
       };
       const showVideoType = () => {
         if (typeSec) return;
         typeSec = addRow("Which kind of video?");
-        const types = [["clone", "Clone · you on camera (HeyGen)"], ["normal", "Normal · AI clips only, no HeyGen"]];
+        const types = [["clone", "Avatar video · you on camera (HeyGen)"], ["normal", "Standalone video · AI clips only"]];
         types.forEach(([type, label]) => {
           typeSec.row.appendChild(makeButton(label, false, (b) => {
             pick(typeSec.row, b);
             if (lenSec) lenSec.el.remove();
             lenSec = addRow("Video length");
-            const lengths = type === "clone"
+            const lengths = type === "clone" && !data.reference
               ? [[0, `Keep my words · ~${data.keep_seconds} s`], ...data.options.map((sec) => [sec, `${sec} s`])]
               : data.options.map((sec) => [sec, `${sec} s`]);
             lengths.forEach(([secs, lbl]) => {
@@ -744,7 +786,7 @@
                 const name = type === "clone" ? "Clone video" : "Normal video";
                 sendPrompt(`${name} · ${secs ? `${secs} s` : "my words as written"}`,
                   `Planning the clips for your ${name.toLowerCase()}...`, "custom_video",
-                  { script: data.script, video_type: type, video_seconds: secs });
+                  { script: data.script, video_type: type, video_seconds: secs, reference: !!data.reference });
               }));
             });
           }));
@@ -1075,28 +1117,19 @@
   }
 
   // Receipt under a finished image/video: each paid item, total per service, and what's left in each account.
-  const BALANCE_HINT = { "Google Gemini": "free tier", Pollinations: "free" };
   function renderUsage(usage) {
     if (!usage || !usage.items) return null;
-    const money = (v) => `$${Number(v || 0).toFixed(v > 0 && v < 0.1 ? 3 : 2)}`;
+    const rupees = (v) => `₹${Number(v || 0).toFixed(v > 0 && v < 10 ? 2 : 0)}`;
     const el = document.createElement("div");
-    el.className = "usage-card";
-    const rows = usage.items.map((it) => `<tr><td class="usage-svc">${escapeHtml(it.service)}</td>
-      <td>${escapeHtml(it.item)}${it.note ? ` <span class="usage-note">(${escapeHtml(it.note)})</span>` : ""}</td>
-      <td class="usage-usd">${money(it.usd)}</td></tr>`).join("");
-    const services = Object.entries(usage.per_service || {}).map(([svc, usd]) => {
-      const left = (usage.balances || {})[svc];
-      const remaining = left != null ? `${money(left)} left` : (BALANCE_HINT[svc] || "");
-      return `<tr><td class="usage-svc">${escapeHtml(svc)}</td><td class="usage-usd">${money(usd)}</td>
-        <td class="usage-left">${escapeHtml(remaining)}</td></tr>`;
-    }).join("");
-    const others = Object.entries(usage.balances || {}).filter(([svc, v]) => v != null && !(svc in (usage.per_service || {})))
-      .map(([svc, v]) => `${escapeHtml(svc)} ${money(v)} left`).join(" · ");
-    el.innerHTML = `<div class="usage-title">Cost of ${usage.kind === "image set" ? "these images" : `this ${usage.kind || "render"}`} · <b>${money(usage.total_usd)}</b></div>
-      ${usage.items.length ? `<table class="usage-table">${rows}</table>
-      <div class="usage-sub">Per service</div><table class="usage-table">${services}</table>`
-        : `<div class="usage-note">No paid service was used.</div>`}
-      ${others ? `<div class="usage-other">${others}</div>` : ""}`;
+    el.className = "usage-line";
+    const total = usage.total_inr != null ? usage.total_inr : null;
+    if (!usage.items.length || !(usage.total_usd > 0)) {
+      el.textContent = "Used ₹0 · no paid service";
+      return el;
+    }
+    // Older results were saved in USD only: show them as they were.
+    el.innerHTML = `Used <b>${total != null ? rupees(total) : `$${usage.total_usd}`}</b>`;
+    el.title = usage.items.map((it) => `${it.service} · ${it.item}: ${it.inr != null ? rupees(it.inr) : `$${it.usd}`}`).join("\n");
     return el;
   }
 
@@ -1203,7 +1236,7 @@
         } else {
           status.textContent = res.message || res.detail || "Couldn't modify the image.";
         }
-        const old = form.querySelector(".usage-card");
+        const old = form.querySelector(".usage-line");
         if (old) old.remove();
         const receipt = renderUsage(res.usage && { ...res.usage, kind: "edit" });
         if (receipt) form.appendChild(receipt);
@@ -1483,6 +1516,10 @@
   }
 
   function estimateLine(est) {
+    if (est.total_inr != null) {
+      if (est.type === "normal") return `Ready to render · about ₹${est.total_inr} (images + video clips, no HeyGen)`;
+      return `Ready to render · about ₹${est.total_inr} (HeyGen ₹${est.heygen_inr} + top half ₹${est.content_inr})`;
+    }
     if (est.type === "normal") return `Ready to render · about $${est.total_usd ?? "?"} (images + video clips, no HeyGen)`;
     return `Ready to render · about $${est.total_usd ?? "?"} (HeyGen $${est.heygen_usd ?? "?"} + top half $${est.content_usd ?? "?"})`;
   }

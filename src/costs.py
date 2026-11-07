@@ -80,10 +80,57 @@ async def balances() -> Dict[str, Optional[float]]:
     return out
 
 
+# ----------------------------------------------------------------------------- rupees
+# He reads costs in INR. The USD->INR rate comes from a free no-key API, cached 12 h; if it can't be fetched,
+# the last good rate (or this fallback) is used.
+_FX_FALLBACK = 88.0
+_fx = {"rate": 0.0, "time": 0.0}
+
+
+def inr_rate() -> float:
+    import time
+    if _fx["rate"] and time.time() - _fx["time"] < 12 * 3600:
+        return _fx["rate"]
+    try:
+        r = httpx.get("https://open.er-api.com/v6/latest/USD", timeout=10).json()
+        rate = float(r["rates"]["INR"])
+        if 50 < rate < 200:  # sanity check
+            _fx.update(rate=rate, time=time.time())
+    except Exception as e:
+        logger.warning(f"USD->INR rate fetch failed, using {_fx['rate'] or _FX_FALLBACK}: {e}")
+        _fx["time"] = time.time() - 11 * 3600  # retry in about an hour, not on every call
+    return _fx["rate"] or _FX_FALLBACK
+
+
+def inr(usd: Optional[float]) -> Optional[float]:
+    return None if usd is None else round(usd * inr_rate(), 2)
+
+
 async def summary(items: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The receipt: every paid item, the total per service, the grand total and the live balances."""
+    """The receipt: every paid item, the total per service and the grand total (USD + INR)."""
+    import asyncio
+    rate = await asyncio.to_thread(inr_rate)
     per_service: Dict[str, float] = {}
     for it in items:
         per_service[it["service"]] = round(per_service.get(it["service"], 0) + it["usd"], 4)
-    return {"items": items, "per_service": per_service, "total_usd": round(sum(per_service.values()), 4),
-            "balances": await balances()}
+        it["inr"] = round(it["usd"] * rate, 2)
+    total = round(sum(per_service.values()), 4)
+    return {"items": items, "per_service": per_service, "total_usd": total, "total_inr": round(total * rate, 2),
+            "inr_rate": rate}
+
+
+async def account_balances() -> List[Dict[str, Any]]:
+    """For the profile menu: what's left in each paid service, in INR (None = no balance API)."""
+    import asyncio
+    live, rate = await balances(), await asyncio.to_thread(inr_rate)
+    rows = [
+        {"name": "WaveSpeed", "use": "Images + video clips", "usd": live.get("WaveSpeed"),
+         "link": "https://wavespeed.ai/center/billing"},
+        {"name": "HeyGen", "use": "Your avatar videos", "usd": live.get("HeyGen"), "link": "https://app.heygen.com/settings"},
+        {"name": "Google Gemini", "use": "Scripts, news, search", "usd": None, "note": "Prepaid · AI Studio ↗",
+         "link": "https://aistudio.google.com/"},
+        {"name": "Groq", "use": "Chat replies", "usd": None, "note": "Free", "link": "https://console.groq.com/"},
+    ]
+    for r in rows:
+        r["inr"] = round(r["usd"] * rate, 2) if r["usd"] is not None else None
+    return rows

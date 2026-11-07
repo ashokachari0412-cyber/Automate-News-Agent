@@ -16,7 +16,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alfred" />
-  <link rel="stylesheet" href="styles.css?v=29" />
+  <link rel="stylesheet" href="styles.css?v=31" />
 </head>
 <body class="alfred-theme">
 
@@ -43,6 +43,10 @@
                 <div class="profile-name">Ashok P</div>
                 <div class="profile-handle">@ashok_a.i</div>
               </div>
+            </div>
+            <div class="profile-balances">
+              <div class="profile-section-title">Balances <span id="balance-updated"></span></div>
+              <div id="balance-list"><div class="balance-row muted">Loading…</div></div>
             </div>
             <button class="profile-menu-item" id="google-btn" role="menuitem" title="Connect your Google account">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -192,7 +196,7 @@
     <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   </div>
 
-  <script src="app.js?v=31"></script>
+  <script src="app.js?v=33"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW registration failed:", e));

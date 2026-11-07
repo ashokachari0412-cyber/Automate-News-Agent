@@ -200,7 +200,7 @@ body.alfred-theme {
   top: calc(100% + 8px);
   right: 0;
   z-index: 200;
-  min-width: 200px;
+  min-width: 270px;
   padding: 6px;
   background-color: var(--bg-card);
   border: 1px solid var(--border-light);
@@ -1943,3 +1943,31 @@ a.msg-action-btn {
 @media (max-width: 600px) {
   .slide-grid.cols-3, .slide-grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+
+/* Profile menu: balances of every paid service, in rupees */
+.profile-balances { padding: 6px 4px 8px; border-bottom: 1px solid var(--border-light); margin-bottom: 4px; }
+.profile-section-title {
+  font-size: 0.7rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted); padding: 2px 6px 6px;
+}
+.profile-section-title span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.balance-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 6px; border-radius: 8px; text-decoration: none; color: var(--text-primary);
+}
+a.balance-row:hover { background: var(--bg-card-hover); }
+.balance-name { display: flex; flex-direction: column; line-height: 1.25; flex: 1; min-width: 0; }
+.balance-name b, .balance-name small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.balance-name b { font-size: 0.84rem; font-weight: 550; }
+.balance-name small { font-size: 0.72rem; color: var(--text-secondary); }
+.balance-amount { font-size: 0.86rem; font-weight: 600; color: var(--status-green); white-space: nowrap; }
+.balance-amount.low { color: var(--accent-terracotta); }
+.balance-amount.muted, .balance-row.muted { color: var(--text-muted); font-weight: 400; font-size: 0.78rem; }
+
+/* After an image / video: just what it used, in rupees (hover for the breakdown) */
+.usage-line {
+  display: inline-block; margin-top: 8px; padding: 4px 10px; border-radius: 999px;
+  font-size: 0.8rem; color: var(--text-secondary); background: var(--bg-card); border: 1px solid var(--border-light);
+}
+.usage-line b { color: var(--accent-terracotta); font-weight: 600; }
