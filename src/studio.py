@@ -2,7 +2,7 @@
 
 Video pipeline (nothing paid runs until he taps "Render"):
   1. Gemini writes the script as time-coded clips (what he says, what the top half shows, how it moves).
-  2. Each clip gets a square 1:1 image (the top part is about square) from the image models (Nano Banana, Flux fallback).
+  2. Each clip gets a square 1:1 image (the top part is about square) from GPT Image 2.5 (WaveSpeed, no fallbacks).
   3. In parallel:  HeyGen (Avatar III) renders ONE continuous take of him saying the whole script,
                    and each image becomes a short content clip (Gemini Omni Flash, or a free FFmpeg zoom).
   4. Clip lengths are synced to his real voice, then FFmpeg stacks: content on the top 60%, his clone on the
@@ -33,6 +33,9 @@ HEYGEN = "https://api.heygen.com"
 WORDS_PER_SECOND = 2.75  # his real pace with the 10% faster voice (27 words = ~9.6 s)
 VIDEO_LENGTHS = [10, 20, 30, 45, 60]  # seconds offered in the app
 DEFAULT_SECONDS = 30
+# Video scripts (what he says, what's shown) use Google's stronger Flash model: the words decide whether people
+# keep watching. Everything else stays on the cheaper GEMINI_MODEL; if this one fails, the usual fallbacks run.
+SCRIPT_MODEL = "gemini-3.8-flash"
 
 _llm = LLMClient(settings)
 
@@ -44,7 +47,8 @@ shows Ashok's AI avatar explaining.
 
 Return ONLY JSON:
 {{"title": "<short title>",
-  "hook": "<the opening line, max 12 words, scroll-stopping>",
+  "hook_options": ["<3 different hooks, each using a different hook style below>", "...", "..."],
+  "hook": "<the strongest of the 3: the one a busy person scrolling would stop for, 100% true, max 12 words>",
   "scenes": [
     {{"spoken": "<exactly what Ashok says in this clip>",
       "on_screen": "<what the top half shows, one sentence>",
@@ -52,12 +56,68 @@ Return ONLY JSON:
       "motion": "<how that image comes alive as a short video: camera move + what moves, 10-25 words>"}}
   ]}}
 
+{script_craft}
+
 Rules:
 - LENGTH IS STRICT: the whole script is {words_lo}-{words_hi} spoken words in total (= {seconds} seconds at his pace).
-- Exactly {scenes} scene(s), about {per_scene} spoken words each. Scene 1 speaks the hook; the last scene lands the
-  key takeaway. Plain, punchy spoken English.
+- Exactly {scenes} scene(s), about {per_scene} spoken words each. Scene 1 speaks the hook first, then the
+  "why you should care" line; the last scene closes the loop the hook opened.
 - NEVER add a call to action like "Follow for more updates" (his cloned voice says it badly).
-- Visuals must show the actual subject of that clip (product, device, place, result), never generic people at laptops."""
+- Visuals must show the actual subject of that clip (product, device, place, result), never generic people at laptops.
+  Scene 1's visual must be the most striking image of the video (it is on screen during the hook).
+- Famous people stop the scroll: a well-known person (e.g. Sam Altman for OpenAI, Elon Musk for xAI / Tesla,
+  Sundar Pichai for Google, Jensen Huang for NVIDIA, Dario Amodei for Anthropic) may be the visual of at most
+  2 scenes, ONLY when the story is directly about them or a BIG moment of the company they lead (flagship model
+  launch, funding, big deal, keynote, lawsuit, leadership news) - never for smaller product features, tools,
+  research or general industry stories. Realistic editorial press-photo style (keynote
+  stage, launch-event portrait), never doing or saying anything the story doesn't report, never in a fake or
+  embarrassing scene."""
+
+SCRIPT_CRAFT = """HOW TO WRITE IT. Three goals, in this order: TRUE, SIMPLE, impossible to scroll past.
+
+THE FIRST 5 SECONDS (about 12-14 spoken words) - this decides if people stay or swipe away
+- Sentence 1 = THE HOOK (max 12 words). Lead with the single most surprising CONCRETE fact of the story:
+  a number, a name, a result, a before/after. A viewer must get it instantly, on first hearing, with no context.
+- Sentence 2 = WHY YOU SHOULD CARE (max 8 words): what it means for the viewer - their money, time, job, skills,
+  or what they can now do. Still inside the first 5 seconds.
+- Open a curiosity gap: make them need the rest, but keep the full answer for later in the script.
+- Hook styles (use a different one for each of the 3 options):
+  1. Shock fact: "Google's new AI just wrote 30% of its own code."
+  2. Bold / contrarian claim: "Your coding assistant is about to become useless."
+  3. Direct "you" stakes: "If you use ChatGPT for work, this changes what you pay."
+  4. Tease the secret: "OpenAI quietly shipped something nobody is talking about."
+  5. Before -> after: "This took a designer 3 days. Now it takes 30 seconds."
+  These show the style only - write your own from the story's real facts, never copy them.
+- NEVER open with: a greeting ("Hey guys"), "In today's video", "So,", "Did you know", "Imagine",
+  "Have you ever", "What if I told you", "Let's talk about", "AI is changing the world", "Big news",
+  or the company name followed by a dry announcement.
+
+KEEP THEM WATCHING (the rest)
+- Talk to ONE person, like a smart friend explaining it over chai: "you", "your", contractions.
+- Every sentence adds one new concrete fact or moves the story forward. If a line can be cut without losing
+  anything, cut it. Never repeat a point.
+- Show, don't claim: a concrete example ("type 'make me a budget tracker' and it builds one") beats an adjective
+  ("powerful", "amazing", "incredible").
+- About halfway, re-hook once with a short surprising turn in your OWN words (a striking number, a catch, a
+  "but"). Don't use stock lines like "But here's the wild part".
+- Build to the payoff: the most useful or surprising fact comes in the second half, not all at the start.
+
+SIMPLE ENGLISH, always
+- Everyday words a 12-year-old or a non-native speaker understands at first hearing. Short sentences
+  (5-12 words), one idea per sentence. Say "use" not "utilize", "help" not "facilitate", "new" not "novel",
+  "huge" not "unprecedented", "makes things up" not "hallucinates". No idioms or fancy phrases.
+- Technical terms only when needed, explained right away in plain words ("an AI agent - a bot that does tasks for you").
+- Banned words: revolutionary, game-changer, groundbreaking, delve, unleash, leverage, ecosystem, paradigm,
+  seamless, robust, era, "in the ever-evolving world", "buckle up".
+
+THE ENDING
+- Pay off the hook's promise, then end on a line that sticks: a sharp takeaway, a bold (but fair) prediction,
+  or a short question that makes people want to comment. No "follow", "like" or "subscribe".
+
+TRUTH (never break this)
+- Only use facts from the source. Never invent numbers, quotes, dates, features or results, and never stretch
+  them ("this ends X", "everything changes") to sound exciting. Make it exciting through the order, the framing
+  and the examples - a hook that isn't true loses trust and viewers."""
 
 SCRIPT_SOURCE = """Use HIS SCRIPT below. Keep his words EXACTLY, in order: do not add, remove or reword anything.
 Only split it into scenes and plan the visuals. The hook is his first sentence.
@@ -69,10 +129,28 @@ BRIEF_SOURCE = """Write the script yourself from this brief:
 
 FIT_SOURCE = """Base the script on HIS SCRIPT below: keep his message, his key phrases and the order of his points,
 but shorten or expand it so it fits the length exactly. Keep his voice; add no facts he didn't give.
+If his opening line is weak, sharpen it into a strong hook (using his own facts) - the rest stays his.
 His script:
 \"\"\"{script}\"\"\""""
 
-NORMAL_PROMPT = """You are the creative director of Master Ashok's (@ashok_a.i) short-form AI videos.
+# A topic or request ("best video models", "latest iPhone price") instead of a finished script: the model's own
+# memory is months/years old, so the facts come from a Google Search first.
+RESEARCH_PROMPT = """Today is {today}. Use Google Search to research this for a short video script:
+\"\"\"{topic}\"\"\"
+Find the CURRENT facts as of today: names, latest versions, numbers, prices, dates. Prefer official sources and the
+newest articles. If something changed (a new version, a price cut, a product shut down), report how it is NOW.
+Return 6-12 short factual bullet points, each ending with its source and date, like "- Fact. [Publisher, YYYY-MM-DD]".
+No intro, no opinions."""
+
+RESEARCH_SOURCE = """Write the script yourself from his request below, using ONLY the facts in the WEB RESEARCH
+(Google Search, {today}). Never add facts, numbers, prices, versions or names that are not in the research - your own
+memory is out of date. If something isn't covered, leave it out. Keep his angle and any key phrases he used.
+His request:
+\"\"\"{request}\"\"\"
+WEB RESEARCH:
+{facts}"""
+
+NORMAL_PROMPT ="""You are the creative director of Master Ashok's (@ashok_a.i) short-form AI videos.
 Plan a vertical 9:16 video of about {seconds} seconds made ONLY of AI-generated clips (an image-to-video model,
 full screen). There is no presenter, avatar or voice-over; short on-screen text carries the message.
 
@@ -91,13 +169,34 @@ Return ONLY JSON:
 
 Rules:
 - Exactly {scenes} scenes whose seconds add up to {seconds}. Follow the order and meaning of his idea/script.
-- Visuals must show the actual subject (product, device, place, result), never generic people at laptops."""
+- Visuals must show the actual subject (product, device, place, result), never generic people at laptops.
+- A well-known person (e.g. Sam Altman for OpenAI, Elon Musk for xAI / Tesla, Jensen Huang for NVIDIA) may be
+  the visual of at most 2 clips, ONLY when the idea is directly about them or a major announcement from the
+  company they lead. Realistic editorial press-photo style, never doing anything the idea doesn't say.
+- Clip 1 is the hook (the first 2-5 seconds decide if people keep watching): its caption is a curiosity-gap line
+  with the most surprising concrete detail (a number, a name, a before/after), e.g. "It wrote 30% of its own code",
+  and its visual is the most striking image of the video. Never a dry title like "New AI model released".
+- Later captions build to a payoff; the last caption is a sharp takeaway, never "follow for more".
+- The first 5 seconds decide if people stay: clips 1-2 must make the viewer curious enough to keep watching.
+- Captions in SIMPLE ENGLISH: everyday words anyone understands in one glance, no jargon or fancy words.
+  Avoid hype words (revolutionary, game-changer, mind-blowing, incredible).
+- Only use facts from his idea/script; make it exciting through framing, never invented numbers or claims."""
 
 IMAGE_PROMPT = """Turn this image request into a prompt for an image model and pick the aspect ratio.
 Request: \"\"\"{request}\"\"\"
 Keep his subject and every detail he asked for; add composition, lighting and style only where he didn't specify.
 Return ONLY JSON: {{"prompt": "<40-80 word image prompt, no text in the image unless he asked for text>",
 "aspect": "1:1" | "4:5" | "9:16" | "16:9"}}"""
+
+IMAGES_PROMPT = """Turn this request into {n} prompts for a SET of {n} different images (like an Instagram carousel)
+and pick one aspect ratio for all of them.
+Request: \"\"\"{request}\"\"\"
+Keep his subject and every detail he asked for. Each image shows a different part, angle, step or moment of it
+(no near-duplicates), in the same visual style so they belong together. Add composition, lighting and style only
+where he didn't specify. Image 1 is the most striking one.
+Return ONLY JSON: {{"prompts": ["<40-80 word image prompt, no text in the image unless he asked for text>", ...
+exactly {n} prompts], "aspect": "1:1" | "4:5" | "9:16" | "16:9"}}"""
+MAX_IMAGES = 6
 
 
 # ----------------------------------------------------------------------------- jobs store
@@ -152,7 +251,7 @@ def video_env() -> Dict[str, str]:
 
 # API prices (USD) for the estimate before rendering and the receipt after (see src/costs.py).
 from src import costs
-from src.costs import HEYGEN_PER_MIN, OMNI_PER_SEC, SEEDREAM_PER_IMAGE, WAN_PER_SEC
+from src.costs import HEYGEN_PER_MIN, OMNI_PER_SEC, WAN_PER_SEC
 ENGINE_NAMES = {"avatar_iii": "Avatar III", "avatar_iv": "Avatar IV", "avatar_v": "Avatar V"}
 
 
@@ -170,7 +269,8 @@ def estimate_cost(plan: Dict[str, Any]) -> Dict[str, Any]:
                  for s in plan["scenes"]]
     rate = {"omni_flash": OMNI_PER_SEC.get(top["resolution"], 0.10),
             "wan": WAN_PER_SEC.get(top["resolution"], 0.025)}.get(engine, 0.0)
-    content = round(rate * sum(clip_secs) + SEEDREAM_PER_IMAGE * len(clip_secs), 2)
+    from src.video.slide_visuals import image_price
+    content = round(rate * sum(clip_secs) + image_price() * len(clip_secs), 2)
     return {"heygen_usd": heygen, "content_usd": content, "total_usd": round(heygen + content, 2),
             "heygen_engine": None if normal else hg_engine, "top_engine": engine,
             "top_resolution": top["resolution"], "seconds": secs, "type": plan.get("type", "clone")}
@@ -331,7 +431,10 @@ Return ONLY JSON: {{"title": "<short title>", "scenes": [{{
 "on_screen": "<what the top half shows, one sentence>",
 "visual": "<photorealistic SQUARE 1:1 image prompt, subject centred, 25-45 words, the concrete subject, no text>",
 "motion": "<how that image comes alive as a short video: camera move + what moves, 10-25 words>"}}]}}
-Exactly {n} scenes, in order. Visuals must show the actual subject of each clip, never generic people at laptops."""
+Exactly {n} scenes, in order. Visuals must show the actual subject of each clip, never generic people at laptops.
+A well-known person (e.g. Sam Altman for OpenAI, Elon Musk for xAI / Tesla, Jensen Huang for NVIDIA) may be the
+visual of at most 2 clips, ONLY when the script is directly about them or a major announcement from the company
+they lead. Realistic editorial press-photo style, never doing anything the script doesn't say."""
 
 
 def _length_rules(seconds: int) -> Dict[str, int]:
@@ -361,10 +464,115 @@ def retime(plan: Dict[str, Any]) -> Dict[str, Any]:
     return plan
 
 
+def _is_topic(text: str, seconds: int) -> bool:
+    """Much shorter than the video needs = a topic/request, not a finished script (the model must add facts)."""
+    return len(text.split()) < 0.6 * seconds * WORDS_PER_SECOND
+
+
+PAGES_PROMPT = """Today is {today}. From ONLY the web pages below, write the CURRENT facts for a short video script about:
+\"\"\"{topic}\"\"\"
+Names, latest versions, numbers, prices, dates. Where pages disagree, trust the newest page. If something changed
+(a new version, a price cut, a product shut down), report how it is NOW. Use only facts stated in the pages.
+Return 6-12 short factual bullet points, each ending with its source and date, like "- Fact. [Publisher, YYYY-MM-DD]".
+No intro, no opinions.
+
+PAGES:
+{pages}"""
+
+_BROWSER = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/130.0 Safari/537.36"}
+_search_skip_until = 0.0  # Google Search grounding out of quota: go straight to the backup for a while
+
+
+def _google_research(topic: str, today: str) -> Dict[str, Any]:
+    from google.genai import types
+    from src.google_workspace.agent import generate_with_fallback
+
+    config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())], temperature=0.2)
+    resp = generate_with_fallback(RESEARCH_PROMPT.format(today=today, topic=topic), config, wait=False)
+    sources, seen = [], set()
+    try:
+        for chunk in resp.candidates[0].grounding_metadata.grounding_chunks or []:
+            web = chunk.web
+            if web and web.uri and (web.title or web.uri) not in seen:
+                seen.add(web.title or web.uri)
+                sources.append({"title": web.title or "", "url": web.uri})
+    except Exception:
+        pass
+    return {"date": today, "facts": (resp.text or "").strip(), "sources": sources[:8]}
+
+
+async def _page_text(client: httpx.AsyncClient, url: str) -> str:
+    try:
+        r = await client.get(url)
+        if r.status_code != 200 or "html" not in r.headers.get("content-type", ""):
+            return ""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form", "noscript"]):
+            tag.decompose()
+        return " ".join(soup.get_text(" ").split())[:3500]
+    except Exception:
+        return ""
+
+
+async def _web_research(topic: str, today: str) -> Dict[str, Any]:
+    """Backup when Google Search grounding is unavailable: DuckDuckGo results + the top pages' text,
+    then Gemini (no search tool) pulls the facts out of those pages only."""
+    from bs4 import BeautifulSoup
+    from src.google_workspace.agent import generate_with_fallback
+
+    query = f"{topic} {time.strftime('%B %Y')}"
+    async with httpx.AsyncClient(headers=_BROWSER, timeout=15, follow_redirects=True) as client:
+        r = await client.post("https://html.duckduckgo.com/html/", data={"q": query})
+        r.raise_for_status()
+        results = []
+        for res in BeautifulSoup(r.text, "html.parser").select(".result"):
+            a, snip = res.select_one(".result__a"), res.select_one(".result__snippet")
+            href = a.get("href", "") if a else ""
+            if href.startswith("http") and "duckduckgo.com" not in href:  # skip ads
+                results.append({"title": a.get_text(" ", strip=True), "url": href,
+                                "snippet": snip.get_text(" ", strip=True) if snip else ""})
+            if len(results) == 6:
+                break
+        if not results:
+            raise RuntimeError("the web search returned no results")
+        texts = await asyncio.gather(*[_page_text(client, x["url"]) for x in results[:4]])
+    pages = "\n\n".join(f"[{i}] {x['title']} ({x['url']})\n{(texts[i - 1] if i <= 4 else '') or x['snippet']}"
+                        for i, x in enumerate(results, 1))
+    resp = await asyncio.to_thread(generate_with_fallback, PAGES_PROMPT.format(today=today, topic=topic, pages=pages),
+                                   {"temperature": 0.2}, False)
+    return {"date": today, "facts": (resp.text or "").strip(),
+            "sources": [{"title": x["title"], "url": x["url"]} for x in results]}
+
+
+async def research(topic: str) -> Dict[str, Any]:
+    """Current facts from the web: Google Search grounding first, DuckDuckGo + page reading as the backup.
+    Never raises: if both fail, `facts` is empty and `error` says why."""
+    global _search_skip_until
+    from src import progress
+    progress.report("Searching the web for current facts...")
+    today = time.strftime("%Y-%m-%d")
+    if time.monotonic() >= _search_skip_until:
+        try:
+            found = await asyncio.to_thread(_google_research, topic, today)
+            if found["facts"]:
+                return found
+        except Exception as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                _search_skip_until = time.monotonic() + 60 * 60
+            logger.warning(f"Google Search grounding failed, using the backup search: {str(e)[:160]}")
+    try:
+        return await _web_research(topic, today)
+    except Exception as e:
+        logger.warning(f"Video research search failed: {str(e)[:200]}")
+        return {"date": today, "facts": "", "sources": [], "error": str(e)[:200]}
+
+
 async def _plan_normal(brief: str, seconds: int) -> Dict[str, Any]:
     """A no-avatar video: AI clips only, full screen, short on-screen text, clip lengths that add up to `seconds`."""
     n = max(1, min(10, round(seconds / 5)))
-    data = await _llm.generate_json(NORMAL_PROMPT.format(brief=brief, seconds=seconds, scenes=n))
+    data = await _llm.generate_json(NORMAL_PROMPT.format(brief=brief, seconds=seconds, scenes=n), model=SCRIPT_MODEL)
     scenes = []
     for s in (data.get("scenes") or []):
         if isinstance(s, dict) and s.get("visual"):
@@ -387,10 +595,29 @@ async def plan_video(brief: str, custom_script: bool = False, seconds: Optional[
                      video_type: str = "clone") -> Dict[str, Any]:
     """video_type "clone": him on the bottom (HeyGen) + content on top. With custom_script and no `seconds`
     his words are kept exactly; with `seconds` his script is tightened/expanded to that length.
-    video_type "normal": AI clips only (no HeyGen), planned from his text."""
+    video_type "normal": AI clips only (no HeyGen), planned from his text.
+    A topic/request (much shorter than the length needs) is researched with Google Search first, so the
+    script uses today's facts instead of the model's old memory; the sources go into the plan."""
+    target = int(seconds or DEFAULT_SECONDS)
+    found = None
+    if (seconds or not custom_script or video_type == "normal") and _is_topic(brief, target):
+        found = await research(brief)
+    plan = await _plan_video(brief, custom_script, seconds, video_type, found)
+    if found:
+        plan["research"] = {"date": found["date"], "sources": found["sources"], "ok": bool(found["facts"])}
+    return plan
+
+
+async def _plan_video(brief: str, custom_script: bool, seconds: Optional[int], video_type: str,
+                      found: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    facts = (found or {}).get("facts")
     if video_type == "normal":
+        if facts:
+            brief = RESEARCH_SOURCE.format(today=found["date"], request=brief, facts=facts)
         return await _plan_normal(brief, int(seconds or DEFAULT_SECONDS))
-    if custom_script and seconds:
+    if facts:
+        custom_script, brief_source = False, RESEARCH_SOURCE.format(today=found["date"], request=brief, facts=facts)
+    elif custom_script and seconds:
         custom_script, brief_source = False, FIT_SOURCE.format(script=brief)
     else:
         brief_source = BRIEF_SOURCE.format(brief=brief)
@@ -400,7 +627,7 @@ async def plan_video(brief: str, custom_script: bool = False, seconds: Optional[
         if not clips:
             raise ValueError("The script is empty")
         data = await _llm.generate_json(VISUALS_PROMPT.format(
-            clips="\n".join(f"{i}. {c}" for i, c in enumerate(clips, 1)), n=len(clips)))
+            clips="\n".join(f"{i}. {c}" for i, c in enumerate(clips, 1)), n=len(clips)), model=SCRIPT_MODEL)
         planned = [s for s in (data.get("scenes") or []) if isinstance(s, dict)]
         scenes = []
         for i, clip in enumerate(clips):
@@ -410,8 +637,9 @@ async def plan_video(brief: str, custom_script: bool = False, seconds: Optional[
                            "motion": s.get("motion") or "Slow cinematic push-in with subtle natural movement"})
         data = {"title": data.get("title"), "hook": clips[0]}
     else:
-        data = await _llm.generate_json(PLAN_PROMPT.format(source=brief_source,
-                                                           **_length_rules(int(seconds or DEFAULT_SECONDS))))
+        data = await _llm.generate_json(PLAN_PROMPT.format(source=brief_source, script_craft=SCRIPT_CRAFT,
+                                                           **_length_rules(int(seconds or DEFAULT_SECONDS))),
+                                        model=SCRIPT_MODEL)
         scenes = [s for s in (data.get("scenes") or []) if isinstance(s, dict) and s.get("spoken")]
     scenes = _drop_cta(scenes)
     if not scenes:
@@ -463,7 +691,7 @@ def plan_markdown(plan: Dict[str, Any]) -> str:
             if s.get("caption"):
                 lines.append(f"Text on screen: \"{s['caption']}\"")
             lines.append("")
-        return "\n".join(lines).strip()
+        return "\n".join(lines + _research_lines(plan)).strip()
     lines = [f"**{plan['title']}** (9:16 split screen, about {plan['duration_sec']}s)", "",
              f"**Hook:** \"{plan['hook']}\"", "",
              "Top half: content video · Bottom half: you explaining (HeyGen)", ""]
@@ -472,7 +700,19 @@ def plan_markdown(plan: Dict[str, Any]) -> str:
         lines.append(f"Says: \"{s['spoken']}\"")
         lines.append(f"Top shows: {s.get('on_screen', '')}")
         lines.append("")
-    return "\n".join(lines).strip()
+    return "\n".join(lines + _research_lines(plan)).strip()
+
+
+def _research_lines(plan: Dict[str, Any]) -> List[str]:
+    r = plan.get("research")
+    if not r:
+        return []
+    if not r.get("ok"):
+        return ["⚠ I couldn't search the web, so the facts come from the AI's memory and may be out of date. "
+                "Check them before you tap Render."]
+    lines = [f"**Facts from a web search ({r['date']}):**"]
+    lines += [f"- [{s['title'] or 'source'}]({s['url']})" for s in r.get("sources", [])]
+    return lines
 
 
 # ----------------------------------------------------------------------------- images
@@ -488,6 +728,35 @@ async def image_prompt(request: str) -> Dict[str, str]:
     return {"prompt": str(data.get("prompt") or request), "aspect": aspect}
 
 
+async def image_prompts(request: str, n: int = 1) -> Dict[str, Any]:
+    """His request -> `n` prompts (a set of different images) + one aspect, shown to him before anything is paid."""
+    n = max(1, min(MAX_IMAGES, n))
+    if n == 1:
+        p = await image_prompt(request)
+        return {"prompts": [p["prompt"]], "aspect": p["aspect"]}
+    data = await _llm.generate_json(IMAGES_PROMPT.format(request=request, n=n))
+    prompts = [str(p).strip() for p in (data.get("prompts") or []) if str(p).strip()][:n]
+    while len(prompts) < n:  # the model returned too few: fill with variations of his request
+        prompts.append(f"{request}. Photorealistic, a different angle and moment (image {len(prompts) + 1} of {n}).")
+    aspect = data.get("aspect") if data.get("aspect") in ("1:1", "4:5", "9:16", "16:9") else "4:5"
+    return {"prompts": prompts, "aspect": aspect}
+
+
+async def make_images(prompts: List[str], aspect: str = "4:5") -> Dict[str, Any]:
+    """Renders his (edited) prompts as a set, in parallel. Raises only if every image failed."""
+    prompts = [p for p in prompts if p.strip()][:MAX_IMAGES]
+    STUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    ledger = costs.start()
+    names = [f"img_{uuid.uuid4().hex[:10]}.png" for _ in prompts]
+    paths = await asyncio.gather(*[
+        asyncio.to_thread(_render_image, p, aspect, STUDIO_DIR / name, f"image {i} of {len(prompts)}")
+        for i, (p, name) in enumerate(zip(prompts, names), 1)])
+    urls = [f"/api/v1/studio/files/{name}" for name, path in zip(names, paths) if path]
+    if not urls:
+        raise RuntimeError("GPT Image 2.5 failed (WaveSpeed balance or network). Please try again in a minute.")
+    return {"urls": urls, "failed": len(prompts) - len(urls), "aspect": aspect, "usage": await costs.summary(ledger)}
+
+
 async def make_image(request: str, aspect: Optional[str] = None, exact_prompt: bool = False) -> Dict[str, Any]:
     """Image from a chat request (enhanced by Gemini) or his own prompt (used as written)."""
     if exact_prompt:
@@ -500,7 +769,7 @@ async def make_image(request: str, aspect: Optional[str] = None, exact_prompt: b
     ledger = costs.start()
     path = await asyncio.to_thread(_render_image, prompt, aspect, STUDIO_DIR / name, "your image")
     if not path:
-        raise RuntimeError("All image models failed (quota or network). Please try again in a minute.")
+        raise RuntimeError("GPT Image 2.5 failed (WaveSpeed balance or network). Please try again in a minute.")
     return {"file": name, "url": f"/api/v1/studio/files/{name}", "prompt": prompt, "aspect": aspect,
             "usage": await costs.summary(ledger)}
 
@@ -688,7 +957,7 @@ async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
         img = await asyncio.to_thread(_render_image, sc["visual"], "1:1", STUDIO_DIR / f"{job['id']}_scene{i}.png",
                                       f"clip {i} image")
         if not img:
-            raise RuntimeError(f"All image models failed for clip {i}")
+            raise RuntimeError(f"GPT Image 2.5 failed for clip {i}")
         src: Dict[str, Any] = {"image": str(img), "engine": "kenburns"}
         _progress(job, "animating" if top["engine"] in ("wan", "omni_flash") else None,
                   top=(i - 0.5) / n if top["engine"] in ("wan", "omni_flash") else i / n)
@@ -791,7 +1060,7 @@ async def _make_normal(job: Dict[str, Any]) -> tuple:
         img = await asyncio.to_thread(_render_image, sc["visual"], "9:16", STUDIO_DIR / f"{job_id}_scene{i}.png",
                                       f"clip {i} image")
         if not img:
-            raise RuntimeError(f"All image models failed for clip {i}")
+            raise RuntimeError(f"GPT Image 2.5 failed for clip {i}")
         secs = float(sc["seconds"])
         job["message"] = f"Animating clip {i} of {n} with Wan 2.6 Flash..."
         _progress(job, "animating", top=(i - 0.5) / n, hg=(i - 0.5) / n)
@@ -1057,9 +1326,8 @@ async def _cli_check() -> None:
         print(f"HeyGen is NOT ready: {e}")
     from src.video.slide_visuals import _openai_env
     oi = _openai_env()
-    print(f"Images: 1. {oi['wavespeed_model']} ({oi['wavespeed_resolution']}, WaveSpeed) · key: "
-          f"{'set' if oi['wavespeed_key'] else 'MISSING (WAVESPEED_API_KEY)'}")
-    print("        2. Nano Banana (free tier) · 3. Flux (free)")
+    print(f"Images: {oi['wavespeed_model']} ({oi['wavespeed_resolution']}, {oi['wavespeed_quality']}, WaveSpeed, "
+          f"no fallbacks) · key: {'set' if oi['wavespeed_key'] else 'MISSING (WAVESPEED_API_KEY)'}")
     from src.video.split_video import _dashscope_env
     top, wan = video_env(), _dashscope_env()
     print(f"Top half: {top['engine']} at {top['resolution']}")

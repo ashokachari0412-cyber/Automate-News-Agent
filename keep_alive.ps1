@@ -12,6 +12,7 @@ $port    = 8000
 $republishCooldown = 600   # seconds to wait after a republish (DNS takes ~3-5 min to appear)
 $lastRepublish     = [datetime]::MinValue
 $dnsMisses         = 0
+$serverMisses      = 0
 
 function Log($msg) {
     $line = "{0:yyyy-MM-dd HH:mm:ss}  {1}" -f (Get-Date), $msg
@@ -45,9 +46,25 @@ Publish-Funnel $false
 while ($true) {
     try {
         # 1. Server
-        if (-not (Server-Up)) {
-            Log "Server not answering on :$port - starting AlfredAI task"
-            Start-ScheduledTask -TaskName "AlfredAI" -ErrorAction SilentlyContinue
+        if (Server-Up) {
+            $serverMisses = 0
+        } else {
+            $serverMisses++
+            $task = Get-ScheduledTask -TaskName "AlfredAI" -ErrorAction SilentlyContinue
+            if ($task.State -eq "Running" -and $serverMisses -ge 2) {
+                # Task alive but not answering (e.g. WinError 64 closed the listen socket): kill and restart
+                Log "Server stuck (task running, :$port not answering) - restarting AlfredAI task"
+                Stop-ScheduledTask -TaskName "AlfredAI" -ErrorAction SilentlyContinue
+                Get-CimInstance Win32_Process -Filter "Name like 'python%'" |
+                    Where-Object { $_.CommandLine -like "*src.cli serve*" } |
+                    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                Start-Sleep 2
+                Start-ScheduledTask -TaskName "AlfredAI" -ErrorAction SilentlyContinue
+                $serverMisses = -1   # allow ~2 extra minutes for startup before the next kill
+            } elseif ($task.State -ne "Running") {
+                Log "Server not answering on :$port - starting AlfredAI task"
+                Start-ScheduledTask -TaskName "AlfredAI" -ErrorAction SilentlyContinue
+            }
         }
 
         # 2. Tailscale connection

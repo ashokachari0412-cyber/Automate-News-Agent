@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -19,7 +20,8 @@ logger = logging.getLogger(__name__)
 GEMINI_HANDLE = "gemini_search"
 
 SEARCH_PROMPT = """Use Google Search to find the most important AI news published in the last {hours} hours
-(today is {today}): new AI models, tools, research, product launches and big company announcements.
+(today is {today}): {focus}.
+Skip minor corporate PR (partnership press releases, 'centers of excellence', awards).
 
 Already known (do NOT repeat these):
 {known}
@@ -41,15 +43,26 @@ def _parse_items(text: str) -> List[dict]:
         return []
 
 
-def _search_sync(hours: int, known_titles: List[str], limit: int) -> List[RawTweet]:
+DEFAULT_FOCUS = "new AI models, tools, research, product launches and big company announcements"
+
+# Google-only scans: one search per area, run together, so the results cover more than one search can.
+WIDE_FOCUSES = [
+    "new AI model releases and major updates from AI labs (OpenAI, Google, Anthropic, Meta, xAI, Mistral, DeepSeek, Qwen)",
+    "new AI tools, apps and product features people can use (video, image, coding, agents, assistants)",
+    "important AI research papers and open-source AI model or framework releases",
+    "big AI business news: funding, acquisitions, chips and AI hardware, regulation",
+]
+
+
+def _search_sync(hours: int, known_titles: List[str], limit: int, focus: str = DEFAULT_FOCUS) -> List[RawTweet]:
     from google.genai import types
     from src.google_workspace.agent import generate_with_fallback
 
     prompt = SEARCH_PROMPT.format(
-        hours=hours, today=datetime.now(timezone.utc).strftime("%Y-%m-%d"), limit=limit,
+        hours=hours, today=datetime.now(timezone.utc).strftime("%Y-%m-%d"), limit=limit, focus=focus,
         known="\n".join(f"- {t}" for t in known_titles[:40]) or "(none)")
     config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())], temperature=0.2)
-    resp = generate_with_fallback(prompt, config)
+    resp = generate_with_fallback(prompt, config, wait=False)
 
     # Real source links from the grounding metadata, used when the model's own URL is missing.
     grounded = []
@@ -86,12 +99,48 @@ def _search_sync(hours: int, known_titles: List[str], limit: int) -> List[RawTwe
     return tweets
 
 
+# Out of quota: skip the search for a while instead of slowing every scan down with failing calls.
+_QUOTA_SKIP_SECONDS = 60 * 60
+_skip_until = 0.0
+
+
 async def search_ai_news(hours: int = 24, known_titles: Optional[List[str]] = None, limit: int = 8) -> List[RawTweet]:
     """Never raises: on quota/network errors the scan simply continues with the official feeds."""
+    global _skip_until
+    if time.monotonic() < _skip_until:
+        logger.info(f"Gemini news search skipped (out of quota, retrying in {int(_skip_until - time.monotonic()) // 60} min)")
+        return []
     try:
         items = await asyncio.to_thread(_search_sync, hours, known_titles or [], limit)
         logger.info(f"Gemini + Google Search found {len(items)} extra candidates.")
         return items
     except Exception as e:
-        logger.warning(f"Gemini news search skipped: {e}")
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            _skip_until = time.monotonic() + _QUOTA_SKIP_SECONDS
+        logger.warning(f"Gemini news search skipped: {str(e)[:200]}")
         return []
+
+
+async def search_ai_news_wide(hours: int = 24, limit_each: int = 6) -> List[RawTweet]:
+    """Google-only scan: one search per area (models, tools, research/open source, business/hardware) in parallel,
+    merged without duplicates. Never raises."""
+    global _skip_until
+    if time.monotonic() < _skip_until:
+        logger.info("Gemini news search skipped (out of quota)")
+        return []
+    results = await asyncio.gather(*[asyncio.to_thread(_search_sync, hours, [], limit_each, f) for f in WIDE_FOCUSES],
+                                   return_exceptions=True)
+    merged, seen = [], set()
+    for res in results:
+        if isinstance(res, Exception):
+            if "429" in str(res) or "RESOURCE_EXHAUSTED" in str(res):
+                _skip_until = time.monotonic() + _QUOTA_SKIP_SECONDS
+            logger.warning(f"One Google news search failed: {str(res)[:160]}")
+            continue
+        for t in res:
+            key = re.sub(r"[^a-z0-9]+", " ", t.text.split(". ")[0].lower()).strip()[:60]
+            if t.id not in seen and key not in seen:
+                seen.update({t.id, key})
+                merged.append(t)
+    logger.info(f"Gemini + Google Search (4 areas) found {len(merged)} stories.")
+    return merged

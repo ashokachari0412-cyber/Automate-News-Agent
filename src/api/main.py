@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from config.settings import settings
 from src.agents.content_agent import ContentAgent
 from src.agents.research_graph import run_research_workflow
-from src.llm.client import LLMClient
+from src.llm.client import GROQ_FAST, GROQ_SMART, LLMClient
 from src.models.news import NewsRankingResult, PrioritizedNewsItem, with_source
 from src.models.script import VideoBlueprint
 from src.publishers.instagram_publisher import InstagramPublisher
@@ -33,8 +33,7 @@ from src import costs, music, progress, storage
 from src.google_workspace import auth as google_auth
 from src.google_workspace.agent import is_workspace_query, run_workspace_agent
 from src.google_workspace.router import router as google_router
-from src.api.voice import router as voice_router
-from src import studio
+from src import monitor, studio
 from src.video.carousel_generator import CarouselGenerator
 from src.video.generator import VideoGenerator
 
@@ -52,7 +51,6 @@ app = FastAPI(
 )
 
 app.include_router(google_router)
-app.include_router(voice_router)
 
 
 PUBLIC_PWA_PATHS = {"/manifest.webmanifest", "/sw.js", "/favicon.png", "/logo.png",
@@ -176,13 +174,22 @@ class AlfredChatRequest(BaseModel):
     context_news_id: Optional[str] = None
     history: Optional[List[Dict[str, str]]] = None
     mode: Optional[str] = None  # "google" = G-Intelligence: answer from the connected Google apps
-    style_hint: Optional[str] = None  # extra reply-style instructions (voice); never used for routing
     aspect: Optional[str] = None  # image aspect ratio chosen in the Custom Script panel
     video_brief: Optional[str] = None  # mode "video_plan": the brief saved when Alfred asked for the length
     video_seconds: Optional[int] = None  # mode "video_plan"/"custom_video": the length he picked (0 = keep my words)
     video_type: Optional[str] = None  # "clone" (HeyGen + content) | "normal" (AI clips only)
     script: Optional[str] = None  # Custom Script steps: his text (the message is just the button he tapped)
     news_id: Optional[str] = None
+    monitor_pick: Optional[int] = None  # mode "monitor_video": breakout post #N from the last Content-Monitor brief
+    news_source: Optional[str] = None  # mode "news_scan": "official" (the feeds) | "google" (Google Search) | None = both
+    story: Optional[int] = None  # mode "news_images": the story number in the digest
+    image_count: Optional[int] = None  # mode "news_images": how many images (1 = single post, 2-6 = carousel)
+    brand: Optional[str] = None  # mode "news_images" with 1 image: "instagram" | "linkedin"
+    prompts: Optional[List[str]] = None  # mode "custom_image": his (edited) prompts for a set of images
+
+
+class CreatorsRequest(BaseModel):
+    creators: List[str]
 
 
 class PlanEditRequest(BaseModel):
@@ -386,6 +393,17 @@ async def studio_avatars(refresh: bool = False):
         return {"avatars": [], "reason": str(e)}
 
 
+@app.get("/api/v1/monitor/creators")
+async def monitor_creators():
+    """The creators Content-Monitor follows."""
+    return {"creators": monitor.load_creators()}
+
+
+@app.put("/api/v1/monitor/creators")
+async def monitor_save_creators(payload: CreatorsRequest):
+    return {"creators": monitor.save_creators(payload.creators)}
+
+
 @app.get("/api/v1/studio/voices")
 async def studio_voices(refresh: bool = False):
     """His own HeyGen voices for the picker shown before rendering."""
@@ -495,7 +513,7 @@ async def studio_file(name: str, download: bool = False):
 
 @app.post("/api/v1/images/modify")
 async def modify_image(req: ModifyImageRequest):
-    """Modify one image: his instruction + the current photo go to the image model (Seedream edit), then the
+    """Modify one image: his instruction + the current photo go to GPT Image 2.5 (WaveSpeed edit), then the
     post is rebuilt around the new photo. Publishing afterwards uses the modified image."""
     from src.video import slide_visuals
     instruction = (req.instruction or "").strip()
@@ -524,11 +542,12 @@ async def modify_image(req: ModifyImageRequest):
                 url = f"/api/v1/carousel/{item.id}/single?brand={brand}&v={v}"
             else:
                 index = int(req.index or 1)
-                if not 1 <= index <= 4:
-                    raise HTTPException(status_code=400, detail="Slide number must be 1-4")
                 assets_file = CAROUSELS_DIR / item.id / "assets.json"
                 assets = json.loads(assets_file.read_text(encoding="utf-8")) if assets_file.exists() else None
-                photo = slide_visuals.story_photo(item, index)
+                total = int((assets or {}).get("total") or 4)
+                if not 1 <= index <= total:
+                    raise HTTPException(status_code=400, detail=f"Slide number must be 1-{total}")
+                photo = slide_visuals.story_photo(item, index, total)
                 src = photo if photo.exists() else CAROUSELS_DIR / item.id / f"slide_{index:02d}.png"
                 await asyncio.to_thread(slide_visuals.edit_image, src, instruction, photo, None, "4:5")
                 if assets:  # point the post at the edited photo, then rebuild the slides
@@ -554,7 +573,8 @@ async def define_term(term: str, context: str = ""):
     if cached:
         return cached
     try:
-        data = await _llm_client.generate_json(DEFINE_PROMPT.format(term=term, context=context[:300]))
+        data = await _llm_client.generate_json(DEFINE_PROMPT.format(term=term, context=context[:300]),
+                                               groq_model=GROQ_SMART)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Could not fetch the meaning: {e}")
     result = {"term": term, "meaning": str(data.get("meaning", "")).strip(), "telugu": str(data.get("telugu", "")).strip()}
@@ -578,7 +598,9 @@ async def publish_carousel(news_id: str, payload: PublishCarouselRequest):
         if not slide_paths[0].exists():
             await _carousel_generator.generate_single_async(item, brand)
     else:
-        slide_paths = [CAROUSELS_DIR / news_id / f"slide_{i:02d}.png" for i in range(1, 5)]
+        assets_file = CAROUSELS_DIR / news_id / "assets.json"
+        total = int(json.loads(assets_file.read_text(encoding="utf-8")).get("total") or 4) if assets_file.exists() else 4
+        slide_paths = [CAROUSELS_DIR / news_id / f"slide_{i:02d}.png" for i in range(1, total + 1)]
         # Make sure slides exist
         if not all(p.exists() for p in slide_paths):
             await _carousel_generator.generate_carousel_async(item)
@@ -879,9 +901,8 @@ async def alfred_chat(req: AlfredChatRequest):
     return await run_alfred_chat(req)
 
 
-async def run_alfred_chat(req: AlfredChatRequest, remember_as: Optional[str] = None) -> Dict[str, Any]:
-    """Shared by the web chat and the voice assistant, so both use one brain and one memory.
-    remember_as: the message to store in memory instead of req.message (voice adds speaking hints)."""
+async def run_alfred_chat(req: AlfredChatRequest) -> Dict[str, Any]:
+    """The web chat: one brain and one memory."""
     _load_news_cache()
     memory = storage.load_memory()
     history = [{"role": m["role"], "content": m["content"]} for m in memory.get("messages", [])]
@@ -900,7 +921,7 @@ async def run_alfred_chat(req: AlfredChatRequest, remember_as: Optional[str] = N
         progress.finish(req.job_id)
         _chat_tasks.pop(req.job_id, None)
 
-    memory.setdefault("messages", []).append({"role": "user", "content": remember_as or req.message})
+    memory.setdefault("messages", []).append({"role": "user", "content": req.message})
     memory["messages"].append({"role": "assistant", "content": response["reply"],
                                **{k: v for k, v in response.items() if k not in ("reply", "author")}})
     if response.get("news_id"):
@@ -917,11 +938,12 @@ meaning of HIS message (use the recent conversation only to resolve references l
 
 Actions:
 - "chat": greetings, small talk, opinions, general knowledge, explanations, questions about a news story's content.
-- "news": he wants the latest AI news / updates / digest.
-- "carousel": he wants the 4-image Instagram carousel (images / photos / slides) for a news story.
+- "news": he asks to GET the latest AI news / updates / digest now (not questions ABOUT a scan or the news feature).
+- "carousel": he wants Instagram carousel images / photos / slides for a news story.
 - "single_image": he wants ONE branded post image for a news story (single photo, or a LinkedIn post image).
 - "video_script": he wants a video / reel / YouTube Short made, about a news story OR any topic he describes.
 - "image": he wants an image/picture/photo/illustration of something he describes (not a news-story post).
+- "script": he pasted a script, a video/post idea or text to turn into content, without saying image or video.
 - "google": anything about HIS OWN Google data: Drive files/folders/documents, Gmail, Calendar, Photos,
   subscriptions, salary/CTC/offer letters or other personal documents.
 
@@ -933,11 +955,11 @@ Recent conversation:
 
 His message: "{message}"
 
-Return ONLY JSON: {{"intent": "chat|news|carousel|single_image|video_script|image|google",
+Return ONLY JSON: {{"intent": "chat|news|carousel|single_image|video_script|image|script|google",
 "story": <story number from the digest or null>, "brand": "instagram|linkedin|null",
 "fresh_scan": <true if he asks for the latest/new/today's news or a scan, else false>}}"""
 
-INTENTS = {"chat", "news", "carousel", "single_image", "video_script", "image", "google"}
+INTENTS = {"chat", "news", "carousel", "single_image", "video_script", "image", "script", "google"}
 
 
 def _keyword_route(msg_lower: str) -> Dict[str, Any]:
@@ -964,7 +986,8 @@ async def _route_intent(message: str, history: List[Dict[str, str]]) -> Dict[str
     digest = "\n".join(f"{i}. {it.title}" for i, it in enumerate(_ranked_news()[:6], 1)) or "(no digest yet)"
     recent = "\n".join(f"{h['role']}: {' '.join(h['content'].split())[:200]}" for h in history[-4:]) or "(none)"
     try:
-        data = await _llm_client.generate_json(ROUTER_PROMPT.format(digest=digest, history=recent, message=message[:1000]))
+        data = await _llm_client.generate_json(ROUTER_PROMPT.format(digest=digest, history=recent, message=message[:1000]),
+                                               groq_model=GROQ_FAST)
         if data.get("intent") in INTENTS:
             story = data.get("story")
             return {"intent": data["intent"], "story": story if isinstance(story, int) else None,
@@ -973,6 +996,17 @@ async def _route_intent(message: str, history: List[Dict[str, str]]) -> Dict[str
     except Exception as e:
         logger.warning(f"AI router failed, using keyword routing: {e}")
     return _keyword_route(message.lower())
+
+
+def _ask_what_to_make(text: str, kind: Optional[str] = None) -> Dict[str, Any]:
+    """His script / idea in the chat: the app shows Image · Video · Just answer it (then image count or video type +
+    length). kind "image" / "video" opens that choice straight away. Nothing paid runs until he taps."""
+    words = len(text.split())
+    reply = {"image": "How many images should I make, Master Ashok?",
+             "video": "What kind of video, and how long, Master Ashok?"}.get(
+        kind or "", f"Got it ({words} words). What should I make from it, Master Ashok?")
+    return {"reply": reply, "author": "Alfred", "action": "script_kind", "script": text, "words": words, "kind": kind,
+            "keep_seconds": max(1, round(words / studio.WORDS_PER_SECOND)), "options": studio.VIDEO_LENGTHS}
 
 
 def _ask_video_length(brief: str, news_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1050,19 +1084,45 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
 
     # The AI router decides the action from his actual words (G-Intelligence mode always means Google).
     script = (req.script or req.message).strip()
-    if req.mode == "custom_script":  # Custom Script step 1: image or video? (the app shows the choices)
-        words = len(script.split())
-        return {"reply": f"Got your script ({words} words). What should I make from it, Master Ashok?",
-                "author": "Alfred", "action": "script_kind", "script": script, "words": words,
-                "keep_seconds": max(1, round(words / studio.WORDS_PER_SECOND)), "options": studio.VIDEO_LENGTHS}
-    if req.mode == "image_prompt":  # Custom Script -> Image: show the exact prompt before anything is paid
-        progress.report("Writing the image prompt...")
+    if req.mode == "content_monitor":  # Content-Monitor: what the creators he follows posted in the last 3 days
         try:
-            p = await studio.image_prompt(script)
+            brief = await monitor.scan()
+        except Exception as e:
+            return {"reply": f"I couldn't run Content-Monitor, Master Ashok: {e}", "author": "Alfred"}
+        if not brief["top"]:
+            return {"reply": f"None of your {brief['creators_ok']} creators posted in the last {brief['days']} days, "
+                             "Master Ashok.", "author": "Alfred"}
+        return {"reply": monitor.brief_markdown(brief), "author": "Alfred", "action": "monitor_brief",
+                "count": len(brief["top"])}
+    if req.mode == "monitor_video":  # "Make my version" of breakout post #N -> the usual length question
+        try:
+            brief = json.loads(monitor.LAST_BRIEF_FILE.read_text(encoding="utf-8"))
+            return _ask_video_length(monitor.video_brief(brief, int(req.monitor_pick or 0)))
+        except Exception:
+            return {"reply": "That brief has expired, Master Ashok. Run Content-Monitor again.", "author": "Alfred"}
+    if req.mode == "custom_script":  # step 1: image or video? (the app shows the choices)
+        return _ask_what_to_make(script)
+    if req.mode == "image_prompt":  # Image -> N images: show the exact prompts before anything is paid
+        n = max(1, min(studio.MAX_IMAGES, req.image_count or 1))
+        progress.report("Writing the image prompt..." if n == 1 else f"Writing {n} image prompts...")
+        try:
+            p = await studio.image_prompts(script, n)
         except Exception as e:
             return {"reply": f"I couldn't write the image prompt, Master Ashok: {e}", "author": "Alfred"}
-        return {"reply": "Here's how I'll generate the image. Edit the prompt or ratio if you like, "
-                         "then tap Generate image.", "author": "Alfred", "action": "image_prompt", **p}
+        what = "the image" if n == 1 else f"your {n} images"
+        return {"reply": f"Here's how I'll generate {what}. Edit the prompts or ratio if you like, then tap Generate.",
+                "author": "Alfred", "action": "image_prompt", "prompt": p["prompts"][0], **p}
+    if req.mode == "custom_image" and req.prompts and len(req.prompts) > 1:  # a set of images
+        progress.report(f"Creating your {len(req.prompts)} images...")
+        try:
+            out = await studio.make_images(req.prompts, req.aspect or "4:5")
+        except Exception as e:
+            return {"reply": f"I couldn't create the images, Master Ashok: {e}", "author": "Alfred"}
+        note = f" ({out['failed']} failed, please try those again)" if out["failed"] else ""
+        return {"reply": f"Here are your {len(out['urls'])} images ({out['aspect']}){note}.", "author": "Alfred",
+                "action": "images", "image_urls": out["urls"], "usage": out["usage"]}
+    if req.mode == "chat_only":  # "Just answer it": treat his text as a normal chat message
+        req.message = script
     if req.mode == "custom_video":  # Custom Script -> Video -> clone / normal -> length
         return await _studio_video(script, custom_script=True, seconds=req.video_seconds or None,
                                    video_type="normal" if req.video_type == "normal" else "clone")
@@ -1072,7 +1132,20 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
                                    video_type="normal" if req.video_type == "normal" else "clone")
     if req.mode == "custom_image":
         return await _studio_image(script, req.aspect, exact_prompt=True)
-    route = {"intent": "google"} if req.mode == "google" else await _route_intent(req.message, history)
+    if req.mode == "google":
+        route = {"intent": "google"}
+    elif req.mode == "news_scan":  # AI Updates button: a fresh scan from the source he picked
+        route = {"intent": "news", "story": None, "brand": None, "fresh_scan": True}
+    elif req.mode == "news_images":  # Img#N -> how many images: 1 = single post, 2-6 = Instagram carousel
+        route = {"intent": "single_image" if (req.image_count or 4) == 1 else "carousel", "story": req.story,
+                 "brand": "linkedin" if req.brand == "linkedin" else "instagram", "fresh_scan": False}
+    elif req.mode == "chat_only":
+        route = {"intent": "chat", "story": None, "brand": None, "fresh_scan": False}
+    else:
+        route = await _route_intent(req.message, history)
+        # A long message routed to plain chat is usually a script he pasted: offer the choices instead of guessing.
+        if route["intent"] == "chat" and len(req.message.split()) >= 60:
+            route["intent"] = "script"
     intent = route["intent"]
     logger.info(f"Router: {intent} {route} <- {req.message[:80]!r}")
 
@@ -1094,7 +1167,8 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         try:
             if not _cached_news or route.get("fresh_scan", True):
                 progress.report("Starting a fresh scan of AI news from the last 24 hours...")
-                workflow_res = await run_research_workflow()
+                source = req.news_source if req.news_source in ("official", "google") else None
+                workflow_res = await run_research_workflow(sources=source)
                 fresh = storage.apply_scan(_cached_news, workflow_res.items)
                 _save_news_cache()
                 if not fresh:
@@ -1120,14 +1194,12 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         for i, item in enumerate(top_items, 1):
             score = round(item.scores.total) if getattr(item, "scores", None) else 95
             source = f"{item.origin} · {item.source_name}" if item.source_name else item.origin
-            item_lines = [
-                f"**{i}. {item.title}** [Impact: {score}/100]",
-                f"*Category: {item.category} · Source: {source}*",
-                f"{item.summary}"
-            ]
+            item_lines = [f"**{i}. {item.title}**", f"{item.summary}"]
             if item.key_bullet_points:
                 item_lines.append("• " + "\n• ".join(item.key_bullet_points[:2]))
             item_lines.append(f"💡 **Why it matters:** {item.why_it_matters}")
+            # "::meta" = small, coloured info line at the end of the story (styled by the web app)
+            item_lines.append(f"::meta Impact: {score}/100 · Category: {item.category} · Source: {source}")
             digest_blocks.append("\n".join(item_lines))
 
         full_reply = "\n\n---\n\n".join(digest_blocks)
@@ -1186,7 +1258,8 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
                 "usage": await costs.summary(ledger),
             }
         if target:
-            paths = await _carousel_generator.generate_carousel_async(target)
+            total = max(2, min(6, req.image_count or 4))  # 2-6 images (1 is the single-image post above)
+            paths = await _carousel_generator.generate_carousel_async(target, total)
             slide_urls = [f"/api/v1/carousel/{target.id}/slide/{i}" for i in range(1, len(paths) + 1)]
             caption = await _generate_post_caption(target)
             return {
@@ -1212,10 +1285,13 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             seconds = _seconds_in(req.message)
             return await _studio_video(brief, news_id=t.id, seconds=seconds) if seconds else _ask_video_length(brief, t.id)
         seconds = _seconds_in(req.message)
-        return await _studio_video(req.message, seconds=seconds) if seconds else _ask_video_length(req.message)
+        # His own topic/script: he picks clone or normal + length (or "keep my words") before anything runs.
+        return await _studio_video(req.message, seconds=seconds) if seconds else _ask_what_to_make(req.message, "video")
 
-    if intent == "image":
-        return await _studio_image(req.message, req.aspect)
+    if intent == "image":  # how many images first (nothing paid until he taps Generate)
+        return _ask_what_to_make(req.message, "image")
+    if intent == "script":  # a script / idea to turn into content: Image · Video · Just answer it
+        return _ask_what_to_make(req.message)
 
     # 4. General conversational query with persistent memory
     context_lines = []
@@ -1228,12 +1304,12 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     if item:
         context_lines.append(f"\n[Story currently in focus]\nTitle: {item.title}\nCategory: {item.category}\nSummary: {item.summary}\nWhy it matters: {item.why_it_matters}")
 
-    full_prompt = ("\n".join(context_lines) + f"\n\nUser message from Master Ashok: \"{req.message}\""
-                   + (req.style_hint or "") + "\n\nRespond as Alfred in character:")
+    full_prompt = ("\n".join(context_lines) + f"\n\nUser message from Master Ashok: \"{req.message}\"" + "\n\nRespond as Alfred in character:")
     try:
         progress.report("Thinking about your question...")
         # Short history window: enough for follow-ups, without dragging old topics (and tokens) into every reply.
-        reply = await _llm_client.generate_text(full_prompt, system_prompt=ALFRED_SYSTEM_PROMPT, history=history[-6:])
+        reply = await _llm_client.generate_text(full_prompt, system_prompt=ALFRED_SYSTEM_PROMPT, history=history[-6:],
+                                                groq_model=GROQ_SMART)
         return {"reply": reply.strip(), "author": "Alfred"}
     except Exception as e:
         logger.error(f"Alfred chat error: {e}")
@@ -1263,7 +1339,7 @@ async def alfred_deepdive(news_id: str):
         f"3. 🎯 **Alfred's Recommendation:** How Master Ashok should angle this for social engagement."
     )
     try:
-        reply = await _llm_client.generate_text(prompt, system_prompt=ALFRED_SYSTEM_PROMPT)
+        reply = await _llm_client.generate_text(prompt, system_prompt=ALFRED_SYSTEM_PROMPT, groq_model=GROQ_SMART)
         return {"title": item.title, "briefing": reply.strip(), "author": "Alfred"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

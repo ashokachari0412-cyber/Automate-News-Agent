@@ -44,8 +44,10 @@ async def run_research_workflow(
     collector: Optional[BaseCollector] = None,
     llm_client: Optional[LLMClient] = None,
     cfg: Settings = settings,
+    sources: Optional[str] = None,
 ) -> NewsRankingResult:
     """Execute the full end-to-end AI Research and Prioritization agent.
+    sources: "official" = only the feeds, "google" = only Gemini + Google Search, None = both.
 
     Returns:
         NewsRankingResult containing the ranked items and top pick for Step 2 (Video Gen).
@@ -62,6 +64,7 @@ async def run_research_workflow(
         "top_pick": None,
         "result": None,
         "error": None,
+        "sources": sources,
     }
 
     final_state = await graph.ainvoke(initial_state)

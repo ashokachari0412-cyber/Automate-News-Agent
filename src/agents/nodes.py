@@ -27,6 +27,7 @@ class ResearchState(TypedDict, total=False):
     top_pick: Optional[PrioritizedNewsItem]
     result: Optional[NewsRankingResult]
     error: Optional[str]
+    sources: Optional[str]  # "official" | "google" | None (both)
 
 
 PICK_POOL = 60          # headlines Gemini chooses from (one short line each, so 60 is cheap)
@@ -62,17 +63,25 @@ class ResearchNodes:
     async def collect_tweets_node(self, state: ResearchState) -> Dict[str, Any]:
         """Node 1: Fetches latest posts from configured trusted Twitter accounts."""
         accounts = state.get("accounts") or settings.get_trusted_accounts()
-        logger.info(f"Running collect_tweets_node across {len(accounts)} trusted accounts.")
-        progress.report(f"Collecting the latest posts from {len(accounts)} trusted AI sources...")
+        sources = state.get("sources")
 
         try:
+            if sources == "google":  # only Gemini + Google Search
+                from src.collectors.gemini_search import search_ai_news_wide
+                progress.report("Searching Google for AI news of the last 24 hours (models, tools, research, business)...")
+                tweets = await search_ai_news_wide(settings.MAX_TWEET_AGE_HOURS)
+                logger.info(f"Google Search only: {len(tweets)} stories.")
+                return {"raw_tweets": tweets, "accounts": accounts}
+
+            logger.info(f"Running collect_tweets_node across {len(accounts)} trusted accounts.")
+            progress.report(f"Collecting the latest posts from {len(accounts)} trusted AI sources...")
             tweets = await self.collector.collect(
                 accounts=accounts,
                 max_per_account=settings.TWEETS_PER_ACCOUNT,
                 max_age_hours=settings.MAX_TWEET_AGE_HOURS,
             )
             logger.info(f"Collected {len(tweets)} raw tweets.")
-            if settings.GEMINI_NEWS_SEARCH:
+            if settings.GEMINI_NEWS_SEARCH and sources != "official":
                 # Second source: Gemini + Google Search looks for big stories the feeds missed.
                 from src.collectors.gemini_search import search_ai_news
                 progress.report(f"Got {len(tweets)} posts from the official feeds; asking Gemini + Google Search for anything they missed...")

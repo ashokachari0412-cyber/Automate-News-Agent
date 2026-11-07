@@ -14,10 +14,8 @@
   const aiUpdatesBtn = document.getElementById("ai-updates-btn");
   const gIntelBtn = document.getElementById("g-intel-btn");
   const contentMonitorBtn = document.getElementById("content-monitor-btn");
-  const customScriptBtn = document.getElementById("custom-script-btn");
   const DEFAULT_PLACEHOLDER = "Type your request to Alfred...";
   let gIntelligence = false; // G-Intelligence on: typed questions go to the connected Google apps
-  const SCAN_PROMPT = "Scan the latest 24h AI breaking news across all authorized labs and summarize the top discoveries.";
 
   // History Drawer
   const historyBtn = document.getElementById("history-btn");
@@ -29,7 +27,6 @@
 
   // Tools
   const attachBtn = document.getElementById("attach-btn");
-  const voiceBtn = document.getElementById("voice-btn");
 
   let isGenerating = false;
   let pendingAttachment = null; // { name, text } extracted server-side, sent with the next message
@@ -154,15 +151,22 @@
     });
   }
 
-  // "AI Updates" chip in the typing area: runs a fresh 24h news scan + digest
+  // "AI Updates" chip in the typing area: asks where to look (official feeds or Google Search), then scans only that
   function setupAiUpdatesButton() {
     aiUpdatesBtn.addEventListener("click", () => {
       if (isGenerating) return;
-      aiUpdatesBtn.disabled = true;
-      sendPrompt(SCAN_PROMPT, "Alfred is scanning the latest 24h AI news (about 1 minute)...")
-        .finally(() => (aiUpdatesBtn.disabled = false));
+      if (heroSection) heroSection.classList.add("hidden");
+      appendMessage("assistant", "Where should I look for the latest AI news, Master Ashok?", { action: "news_source" });
+      scrollToBottom();
     });
   }
+
+  const NEWS_SOURCES = {
+    official: { label: "Official news", prompt: "AI Updates: official news",
+                wait: "Reading the official AI lab and tech feeds (about 1 minute)..." },
+    google: { label: "Google search", prompt: "AI Updates: Google search",
+              wait: "Searching Google for today's AI news (about 1 minute)..." },
+  };
 
   // G-Intelligence is a toggle: while on, typed questions are answered from the user's Google apps.
   // Content-Monitor is a placeholder for a later feature.
@@ -174,36 +178,45 @@
       chatInput.placeholder = gIntelligence ? "Ask about your Drive, Docs, Gmail, Calendar, Photos..." : DEFAULT_PLACEHOLDER;
       chatInput.focus();
     });
-    setupScriptPanel();
-    contentMonitorBtn.addEventListener("click", () => {
-      contentMonitorBtn.classList.add("pulse");
-      setTimeout(() => contentMonitorBtn.classList.remove("pulse"), 600);
-    });
+    setupMonitorPanel();
   }
 
-  // Custom Script: he writes, sends it to the chat, and Alfred asks image or video (clone / normal) + length.
-  function setupScriptPanel() {
-    const panel = document.getElementById("script-panel");
-    const text = document.getElementById("script-text");
-    const go = document.getElementById("script-go");
-    const lengthLine = document.getElementById("script-length");
-    const updateLength = () => {
-      const words = text.value.trim() ? text.value.trim().split(/\s+/).length : 0;
-      lengthLine.classList.toggle("hidden", !words);
-      lengthLine.textContent = `${words} words · about ${Math.max(1, Math.round(words / WORDS_PER_SECOND))} s if spoken as written`;
+  // Content-Monitor: his creator list + "Scan now" -> a brief of their breakout posts from the last 3 days.
+  function setupMonitorPanel() {
+    const panel = document.getElementById("monitor-panel");
+    const text = document.getElementById("monitor-text");
+    const saveBtn = document.getElementById("monitor-save");
+    const handles = () => text.value.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean);
+    const save = async () => {
+      const res = await fetch("/api/v1/monitor/creators", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ creators: handles() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      text.value = data.creators.map((c) => `@${c}`).join("\n");
+      return data.creators;
     };
-    text.addEventListener("input", updateLength);
     const close = () => panel.classList.add("hidden");
-    customScriptBtn.addEventListener("click", () => { panel.classList.remove("hidden"); text.focus(); });
-    document.getElementById("script-close").addEventListener("click", close);
+    contentMonitorBtn.addEventListener("click", async () => {
+      panel.classList.remove("hidden");
+      try {
+        const data = await (await fetch("/api/v1/monitor/creators")).json();
+        text.value = (data.creators || []).map((c) => `@${c}`).join("\n");
+      } catch (e) { /* keep whatever is in the box */ }
+    });
+    document.getElementById("monitor-close").addEventListener("click", close);
     panel.addEventListener("click", (e) => { if (e.target === panel) close(); });
-    go.addEventListener("click", () => {
-      const script = text.value.trim();
-      if (!script || isGenerating) return;
+    saveBtn.addEventListener("click", async () => {
+      saveBtn.disabled = true;
+      try { await save(); saveBtn.textContent = "Saved ✓"; } catch (e) { saveBtn.textContent = "Save failed"; }
+      setTimeout(() => { saveBtn.textContent = "Save list"; saveBtn.disabled = false; }, 1500);
+    });
+    document.getElementById("monitor-go").addEventListener("click", async () => {
+      if (isGenerating) return;
+      try { await save(); } catch (e) { /* scan with the saved list */ }
       close();
-      text.value = "";
-      updateLength();
-      sendPrompt(script, "Reading your script...", "custom_script", { script });
+      sendPrompt("Content-Monitor: what did my creators post in the last 3 days?",
+        "Reading your creators' posts (about 1 minute)...", "content_monitor");
     });
   }
 
@@ -335,13 +348,6 @@
         pendingAttachment = null;
         showAttachmentChip(file.name, `Failed: ${e.message}`, true);
       }
-    });
-
-    voiceBtn.addEventListener("click", () => {
-      chatInput.placeholder = "Listening... (or type your request)";
-      setTimeout(() => {
-        chatInput.placeholder = "Type your request to Alfred...";
-      }, 3000);
     });
   }
 
@@ -685,7 +691,7 @@
       body.appendChild(block);
     }
 
-    // Custom Script: Image or Video -> (video) Clone or Normal -> length. Each choice reveals the next row.
+    // His script / idea in the chat: Image (how many?) · Video (clone / normal -> length) · Just answer it.
     if (data.action === "script_kind" && data.script) {
       const wrap = document.createElement("div");
       wrap.className = "script-steps";
@@ -701,14 +707,16 @@
       };
       let typeSec = null;
       let lenSec = null;
-      const kind = addRow("Image or video?");
-      kind.row.appendChild(makeButton("🖼 Image", false, (btn) => {
-        if (isGenerating) return;
-        pick(kind.row, btn);
-        sendPrompt("Image", "Writing the image prompt...", "image_prompt", { script: data.script });
-      }));
-      kind.row.appendChild(makeButton("🎬 Video", false, (btn) => {
-        pick(kind.row, btn);
+      let countSec = null;
+      const showImageCount = () => {
+        if (countSec) return;
+        countSec = addRow("How many images?");
+        countSec.row.appendChild(makeCountCircles(6, (n) => {
+          sendPrompt(n === 1 ? "1 image" : `${n} images`, n === 1 ? "Writing the image prompt..." : `Writing ${n} image prompts...`,
+            "image_prompt", { script: data.script, image_count: n });
+        }, (n) => (n === 1 ? "1 image" : `A set of ${n} different images`)));
+      };
+      const showVideoType = () => {
         if (typeSec) return;
         typeSec = addRow("Which kind of video?");
         const types = [["clone", "Clone · you on camera (HeyGen)"], ["normal", "Normal · AI clips only, no HeyGen"]];
@@ -718,10 +726,10 @@
             if (lenSec) lenSec.el.remove();
             lenSec = addRow("Video length");
             const lengths = type === "clone"
-              ? [[0, `Keep my words · ~${data.keep_seconds} s`], ...data.options.map((s) => [s, `${s} s`])]
-              : data.options.map((s) => [s, `${s} s`]);
+              ? [[0, `Keep my words · ~${data.keep_seconds} s`], ...data.options.map((sec) => [sec, `${sec} s`])]
+              : data.options.map((sec) => [sec, `${sec} s`]);
             lengths.forEach(([secs, lbl]) => {
-              lenSec.row.appendChild(makeButton(lbl, secs === (type === "clone" ? 0 : 30), (lb) => {
+              lenSec.row.appendChild(makeButton(lbl, false, (lb) => {
                 if (isGenerating) return;
                 pick(lenSec.row, lb);
                 const name = type === "clone" ? "Clone video" : "Normal video";
@@ -732,18 +740,41 @@
             });
           }));
         });
-      }));
+      };
+      if (data.kind === "image") showImageCount();
+      else if (data.kind === "video") showVideoType();
+      else {
+        const kind = addRow("What should I make?");
+        kind.row.appendChild(makeButton("🖼 Image", false, (btn) => { pick(kind.row, btn); showImageCount(); }));
+        kind.row.appendChild(makeButton("🎬 Video", false, (btn) => { pick(kind.row, btn); showVideoType(); }));
+        kind.row.appendChild(makeButton("💬 Just answer it", false, (btn) => {
+          if (isGenerating) return;
+          pick(kind.row, btn);
+          sendPrompt("Just answer it", "Thinking...", "chat_only", { script: data.script });
+        }));
+      }
       body.appendChild(wrap);
     }
 
-    // Custom Script -> Image: the exact prompt + ratio the image model will get, editable before generating.
-    if (data.action === "image_prompt" && data.prompt) {
+    // Image -> N: the exact prompts + ratio the image model will get, editable before generating.
+    if (data.action === "image_prompt" && (data.prompts || data.prompt)) {
+      const prompts = data.prompts && data.prompts.length ? data.prompts : [data.prompt];
       const wrap = document.createElement("div");
       wrap.className = "image-prompt-edit";
-      const area = document.createElement("textarea");
-      area.className = "caption-box caption-edit";
-      area.value = data.prompt;
-      area.rows = 5;
+      const areas = prompts.map((p, i) => {
+        if (prompts.length > 1) {
+          const lbl = document.createElement("div");
+          lbl.className = "format-choice-title";
+          lbl.textContent = `Image ${i + 1}`;
+          wrap.appendChild(lbl);
+        }
+        const area = document.createElement("textarea");
+        area.className = "caption-box caption-edit";
+        area.value = p;
+        area.rows = prompts.length > 1 ? 3 : 5;
+        wrap.appendChild(area);
+        return area;
+      });
       const row = document.createElement("div");
       row.className = "msg-actions";
       const ratio = document.createElement("select");
@@ -752,14 +783,54 @@
         ratio.insertAdjacentHTML("beforeend", `<option value="${v}"${v === data.aspect ? " selected" : ""}>${l}</option>`);
       });
       row.appendChild(ratio);
-      row.appendChild(makeButton("Generate image", true, () => {
-        const prompt = area.value.trim();
-        if (!prompt || isGenerating) return;
-        sendPrompt("Generate this image", "Creating your image...", "custom_image", { script: prompt, aspect: ratio.value });
+      const label = prompts.length > 1 ? `Generate ${prompts.length} images` : "Generate image";
+      row.appendChild(makeButton(label, true, () => {
+        const list = areas.map((a) => a.value.trim()).filter(Boolean);
+        if (!list.length || isGenerating) return;
+        if (list.length === 1) {
+          sendPrompt("Generate this image", "Creating your image...", "custom_image", { script: list[0], aspect: ratio.value });
+        } else {
+          sendPrompt(`Generate these ${list.length} images`, `Creating your ${list.length} images...`, "custom_image",
+            { script: list[0], prompts: list, aspect: ratio.value });
+        }
       }));
-      wrap.appendChild(area);
       wrap.appendChild(row);
       body.appendChild(wrap);
+    }
+
+    // A set of images from his prompts: grid, tap to view, Modify and Download on each.
+    if (data.action === "images" && Array.isArray(data.image_urls) && data.image_urls.length) {
+      const block = document.createElement("div");
+      block.className = "carousel-block";
+      const grid = document.createElement("div");
+      grid.className = "slide-grid";
+      const urls = [...data.image_urls];
+      urls.forEach((url, i) => {
+        const cell = document.createElement("div");
+        cell.className = "slide-cell";
+        const link = document.createElement("a");
+        link.href = url;
+        link.addEventListener("click", (e) => { e.preventDefault(); openLightbox(urls, i); });
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = `Image ${i + 1}`;
+        img.addEventListener("load", scrollToBottom);
+        link.appendChild(img);
+        cell.appendChild(link);
+        addModifyControl(cell, img, link, { kind: "studio", file: url.split("/").pop().split("?")[0] },
+          (u) => { urls[i] = u; });
+        const dl = document.createElement("a");
+        dl.className = "msg-action-btn";
+        dl.href = downloadUrl(url);
+        dl.download = `alfred-image-${i + 1}.png`;
+        dl.textContent = "Download";
+        cell.appendChild(dl);
+        grid.appendChild(cell);
+      });
+      block.appendChild(grid);
+      const receipt = renderUsage(data.usage && { ...data.usage, kind: "image" });
+      if (receipt) block.appendChild(receipt);
+      body.appendChild(block);
     }
 
     if (data.action === "video_length" && Array.isArray(data.options)) {
@@ -774,6 +845,31 @@
         }));
       });
       body.appendChild(row);
+    }
+
+    if (data.action === "news_source") {
+      const row = document.createElement("div");
+      row.className = "msg-actions";
+      Object.entries(NEWS_SOURCES).forEach(([key, s], i) => {
+        row.appendChild(makeButton(s.label, i === 0, () => {
+          if (isGenerating) return;
+          row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+          aiUpdatesBtn.disabled = true;
+          sendPrompt(s.prompt, s.wait, "news_scan", { news_source: key }).finally(() => (aiUpdatesBtn.disabled = false));
+        }));
+      });
+      body.appendChild(row);
+    }
+
+    if (data.action === "monitor_brief" && data.count) {
+      const sec = makeSection("Make my version");
+      for (let k = 1; k <= data.count; k++) {
+        sec.row.appendChild(makeButton(`#${k}`, false, () => {
+          if (!isGenerating) sendPrompt(`Make my version of #${k}`, "Planning your version...", "monitor_video", { monitor_pick: k });
+        }));
+      }
+      sec.row.classList.add("num-row");
+      body.appendChild(sec.el);
     }
 
     if (data.action === "video_job" && data.job_id) {
@@ -801,7 +897,7 @@
     }
 
     if (data.action === "news_digest" && Array.isArray(data.items) && data.items.length) {
-      // Images section: each story first asks for the format (LinkedIn single vs Instagram 4)
+      // Images section: each story asks how many images (1 = Instagram/LinkedIn single post, 2-6 = carousel)
       const imgSection = makeSection("Images");
       const choice = document.createElement("div");
       choice.className = "format-choice hidden";
@@ -809,29 +905,41 @@
         imgSection.row.appendChild(makeButton(`Img#${i + 1}`, false, (btn) => {
           imgSection.row.querySelectorAll(".msg-action-btn").forEach((b) => b.classList.remove("active"));
           btn.classList.add("active");
-          choice.innerHTML = `<div class="format-choice-title">#${i + 1} — choose a format</div>`;
+          choice.innerHTML = `<div class="format-choice-title">#${i + 1} — how many images?</div>`;
           const opts = document.createElement("div");
-          opts.className = "msg-actions";
-          // Single photo first asks where it will be posted: Instagram is branded, LinkedIn is content only
+          opts.className = "count-row";
+          // 1 image first asks where it will be posted: Instagram is branded, LinkedIn is content only
           const brandRow = document.createElement("div");
           brandRow.className = "msg-actions hidden-row";
-          brandRow.innerHTML = `<div class="format-choice-title brand-title">Single photo — is this for Instagram or LinkedIn?</div>`;
-          brandRow.appendChild(makeButton("Instagram · @ashok_a.i", false, () => {
-            if (!isGenerating) sendPrompt(`generate single image for instagram ${i + 1}`);
-          }));
-          brandRow.appendChild(makeButton("LinkedIn · Ashokachari P", false, () => {
-            if (!isGenerating) sendPrompt(`generate single image for linkedin ${i + 1}`);
-          }));
+          brandRow.innerHTML = `<div class="format-choice-title brand-title">1 image — is this for Instagram or LinkedIn?</div>`;
+          const single = (brand) => () => {
+            if (!isGenerating) sendPrompt(`Make 1 ${brand === "linkedin" ? "LinkedIn" : "Instagram"} image for story #${i + 1}`,
+              "Making your image...", "news_images", { story: i + 1, image_count: 1, brand });
+          };
+          brandRow.appendChild(makeButton("Instagram · @ashok_a.i", false, single("instagram")));
+          brandRow.appendChild(makeButton("LinkedIn · Ashokachari P", false, single("linkedin")));
 
-          opts.appendChild(makeButton("Single photo", false, (b) => {
-            opts.querySelectorAll(".msg-action-btn").forEach((x) => x.classList.remove("active"));
-            b.classList.add("active");
-            brandRow.classList.remove("hidden-row");
-            scrollToBottom();
-          }));
-          opts.appendChild(makeButton("4 photos · Instagram", false, () => {
-            if (!isGenerating) sendPrompt(`generate images for ${i + 1}`);
-          }));
+          // Round 1-6 circles: the tapped one fills in.
+          for (let n = 1; n <= 6; n++) {
+            const c = document.createElement("button");
+            c.type = "button";
+            c.className = "count-circle";
+            c.textContent = String(n);
+            c.title = n === 1 ? "1 image (Instagram or LinkedIn)" : `${n}-image Instagram carousel`;
+            c.addEventListener("click", () => {
+              if (isGenerating) return;
+              opts.querySelectorAll(".count-circle").forEach((x) => x.classList.toggle("active", x === c));
+              if (n === 1) {
+                brandRow.classList.remove("hidden-row");
+                scrollToBottom();
+                return;
+              }
+              brandRow.classList.add("hidden-row");
+              sendPrompt(`Make ${n} images for story #${i + 1}`, `Making ${n} images...`, "news_images",
+                { story: i + 1, image_count: n });
+            });
+            opts.appendChild(c);
+          }
           choice.appendChild(opts);
           choice.appendChild(brandRow);
           choice.classList.remove("hidden");
@@ -1773,6 +1881,26 @@
     lightbox.el.querySelectorAll(".lightbox-nav").forEach((b) => (b.hidden = n < 2));
   }
 
+  // Round 1..max circles; the tapped one fills in. onPick(n) runs on tap.
+  function makeCountCircles(max, onPick, titleFor) {
+    const row = document.createElement("div");
+    row.className = "count-row";
+    for (let n = 1; n <= max; n++) {
+      const c = document.createElement("button");
+      c.type = "button";
+      c.className = "count-circle";
+      c.textContent = String(n);
+      if (titleFor) c.title = titleFor(n);
+      c.addEventListener("click", () => {
+        if (isGenerating) return;
+        row.querySelectorAll(".count-circle").forEach((x) => x.classList.toggle("active", x === c));
+        onPick(n);
+      });
+      row.appendChild(c);
+    }
+    return row;
+  }
+
   function makeButton(label, primary, onClick) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1837,13 +1965,24 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
+      // [text](https://...) links, opened in a new tab
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)"]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      // "::meta ..." = small coloured info line (impact, category, source) at the end of a news story
+      .replace(/^::meta (.+)$/gm, '<span class="news-meta">$1</span>')
       .replace(/^#{1,4}\s+(.+)$/gm, "<strong>$1</strong>")
       .replace(/^\s*[*-]\s+/gm, "• ")
       // Bold only for headings / titles / sub-headings: a whole bold line (optionally followed by [..]),
       // or a bold "Label:" at the start of a line. Bold words inside sentences become plain text.
+      // Video plan title: "**Title** (9:16 split screen, about 38s)" -> bold title + muted details
+      .replace(/^\*\*([^*\n]+)\*\* \((9:16[^)\n]*)\)$/gm, '<strong>$1</strong> <span class="plan-muted">$2</span>')
       .replace(/^(\W{0,3}\s*)\*\*([^*\n]+?)\*\*(\s*(\[[^\]\n]*\])?\s*)$/gm, "$1<strong>$2</strong>$3")
       .replace(/^(\W{0,3}\s*)\*\*([^*\n]{1,40}:)\*\*/gm, "$1<strong>$2</strong>")
       .replace(/\*\*(.*?)\*\*/g, "$1")
+      // Video plan colours: clip heading (accent) + time (muted), labels (soft blue), hook label (accent)
+      .replace(/^<strong>(Clip \d+) \(([^)\n]+)\)<\/strong>/gm, '<strong class="plan-clip">$1</strong> <span class="plan-muted">$2</span>')
+      .replace(/^(Says|Top shows|Shows|Text on screen):/gm, '<span class="plan-label">$1:</span>')
+      .replace(/^<strong>Hook:<\/strong>/gm, '<strong class="plan-clip">Hook:</strong>')
+      .replace(/^((?:Top half|No avatar): [^\n]+)$/gm, '<span class="plan-muted">$1</span>')
       .replace(/\*(.*?)\*/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/(?:^|\n)\s*---\s*(?:\n|$)/g, '<hr class="news-divider">')

@@ -15,7 +15,7 @@ from google.genai import types
 
 from config.settings import settings
 from src.google_workspace.tools import TOOLS, ui_cards
-from src.llm.client import LLMClient
+from src.llm.client import LLMClient, available_models, note_model_error
 
 _llm = LLMClient(settings)
 
@@ -73,23 +73,25 @@ async def run_workspace_agent(message: str, history: List[Dict[str, str]]) -> Di
             "action": "workspace", "cards": cards}
 
 
-FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-3-flash-preview", "gemini-flash-lite-latest", "gemini-3.8-flash"]
+# Flash models last: only ~20 free requests/day.
+FALLBACK_MODELS = ["gemini-3.1-flash-lite", "gemini-flash-lite-latest", "gemini-3-flash-preview", "gemini-3.8-flash"]
 
 
-def generate_with_fallback(contents, config=None):
+def generate_with_fallback(contents, config=None, wait=True):
     """Free-tier quota is per model per minute (HTTP 429): try the next model, and if every model is
-    rate limited, wait for the suggested delay once and retry."""
+    rate limited, wait for the suggested delay once and retry (wait=False: give up right away)."""
     models = list(dict.fromkeys([settings.GEMINI_MODEL] + FALLBACK_MODELS))
     last_err = None
-    for attempt in range(2):
-        for model in models:
+    for attempt in range(2 if wait else 1):
+        for model in available_models(models):
             try:
                 return _llm._client.models.generate_content(model=model, contents=contents, config=config)
             except Exception as e:
                 last_err = e
+                note_model_error(model, e)
                 if "429" not in str(e) and "RESOURCE_EXHAUSTED" not in str(e) and "503" not in str(e):
                     raise
-        if attempt == 0:
+        if wait and attempt == 0:
             m = re.search(r"retryDelay': '(\d+)s", str(last_err))
             time.sleep(min(int(m.group(1)) + 1 if m else 20, 40))
     raise last_err

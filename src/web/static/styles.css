@@ -1195,6 +1195,36 @@ a.msg-action-btn {
   color: #fff;
 }
 
+/* "How many images?" 1-6: orange outlined circles, the tapped one fills in */
+.count-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.count-circle {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-terracotta);
+  background: transparent;
+  color: var(--accent-terracotta);
+  font: inherit;
+  font-weight: 600;
+  font-size: 1em;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.count-circle:hover { background: rgba(217, 119, 87, 0.12); }
+.count-circle:active { transform: scale(0.94); }
+
+.count-circle.active {
+  background: var(--accent-terracotta);
+  color: #fff;
+}
+
 /* Editable caption */
 .caption-edit {
   display: block;
@@ -1575,7 +1605,7 @@ a.msg-action-btn {
   background: rgba(217, 119, 87, 0.1);
 }
 
-#script-text {
+#script-text, #monitor-text {
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
@@ -1590,7 +1620,11 @@ a.msg-action-btn {
   outline: none;
 }
 
-#script-text:focus { border-color: var(--border-focus); }
+#script-text:focus, #monitor-text:focus { border-color: var(--border-focus); }
+
+.monitor-note { margin: 8px 0 12px; color: var(--text-secondary); font-size: 0.85em; line-height: 1.4; }
+.monitor-actions { display: flex; gap: 8px; }
+.monitor-actions .msg-action-btn { flex: 1; }
 
 .script-aspect {
   display: flex;
@@ -1828,3 +1862,19 @@ a.msg-action-btn {
 }
 .voice-chip:hover { border-color: var(--border-hover); }
 .voice-chip.selected { border-color: var(--accent-terracotta); color: var(--text-primary); }
+
+/* Impact · Category · Source line at the end of each news story */
+.news-meta {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.78em;
+  color: #7fa7c9;
+  letter-spacing: 0.01em;
+}
+
+.bubble-text a { color: var(--accent-terracotta); text-decoration: underline; text-underline-offset: 2px; }
+
+/* Video plan: clip headings in the accent, times and notes muted, labels in soft blue */
+.plan-clip { color: var(--accent-terracotta); }
+.plan-muted { color: var(--text-secondary); font-size: 0.88em; font-weight: 400; }
+.plan-label { color: #7fa7c9; font-weight: 500; }

@@ -1,15 +1,20 @@
 """LLM client: Google Gemini first, Groq as the backup provider.
 
 Order for every text / JSON request:
-  1. Gemini models (GEMINI_MODEL, then the other Gemini candidates)
-  2. Groq models (GROQ_MODELS), only if GROQ_API_KEY is set in .env (read fresh, no restart needed)
-  3. Otherwise a clear error / "unavailable" message. There is no offline fake output.
+  1. Groq first only when the caller asks for a Groq model (`groq_model=`, for short fast tasks such as
+     chat replies and understanding the message) and GROQ_API_KEY is set
+  2. Gemini models (GEMINI_MODEL, then the other Gemini candidates)
+  3. Groq models (GROQ_MODELS) as the backup, only if GROQ_API_KEY is set in .env (read fresh, no restart)
+  4. Otherwise a clear error / "unavailable" message. There is no offline fake output.
+
+Groq models for `groq_model=`: GROQ_FAST (understanding the message) and GROQ_SMART (chat replies).
 """
 
 import asyncio
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from config.settings import Settings, settings
@@ -17,6 +22,28 @@ from config.settings import Settings, settings
 ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
 
 logger = logging.getLogger(__name__)
+
+GROQ_FAST = "openai/gpt-oss-20b"    # ~1000 tokens/s: short, quick decisions
+GROQ_SMART = "openai/gpt-oss-120b"  # ~500 tokens/s: chat replies, explanations
+
+# A Gemini model that is overloaded (503) is skipped for a while, so one busy model doesn't add its slow
+# failing call (40+ s) to every request; a rate-limited one (429) is skipped for a minute.
+_busy_until: Dict[str, float] = {}
+
+
+def available_models(models: List[str]) -> List[str]:
+    """Models not marked busy, in order (all of them if every model is busy)."""
+    now = time.monotonic()
+    return [m for m in models if _busy_until.get(m, 0) <= now] or list(models)
+
+
+def note_model_error(model: str, err: Exception) -> None:
+    msg = str(err)
+    if "503" in msg or "UNAVAILABLE" in msg or "DEADLINE" in msg:
+        _busy_until[model] = time.monotonic() + 10 * 60
+        logger.warning(f"Gemini model {model} is overloaded - skipping it for 10 minutes")
+    elif "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        _busy_until[model] = time.monotonic() + 60
 
 
 class LLMClient:
@@ -37,12 +64,20 @@ class LLMClient:
             except Exception as e:
                 logger.warning(f"Could not initialize Google GenAI client: {e}")
 
-    async def generate_json(self, prompt: str, system_prompt: str = "") -> Dict[str, Any]:
-        """Structured JSON output: Gemini models first, then Groq. Raises if every provider fails."""
+    async def generate_json(self, prompt: str, system_prompt: str = "",
+                            groq_model: Optional[str] = None, model: Optional[str] = None) -> Dict[str, Any]:
+        """Structured JSON output: Gemini models first, then Groq (groq_model= puts that Groq model first).
+        model= puts that Gemini model first (e.g. the stronger one for video scripts). Raises if every provider fails."""
         errors = []
+        if groq_model and self._groq_settings()["key"]:
+            try:
+                return self._extract_json(await self._call_groq(prompt, system_prompt, json_mode=True,
+                                                                models=[groq_model]))
+            except Exception as e:
+                errors.append(f"Groq {groq_model}: {e}")
         if self._client:
             try:
-                return await self._call_gemini_json(prompt, system_prompt)
+                return await self._call_gemini_json(prompt, system_prompt, model)
             except Exception as e:
                 errors.append(f"Gemini: {e}")
                 logger.error(f"All Gemini models failed for JSON: {e}")
@@ -52,21 +87,23 @@ class LLMClient:
             errors.append(f"Groq: {e}")
         raise RuntimeError("AI providers are unavailable right now (" + " | ".join(e[:160] for e in errors) + ")")
 
-    async def _call_gemini_json(self, prompt: str, system_prompt: str) -> Dict[str, Any]:
+    async def _call_gemini_json(self, prompt: str, system_prompt: str, first: Optional[str] = None) -> Dict[str, Any]:
         """Invoke Google Gemini model requesting JSON response with automatic model fallback."""
         full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
         candidate_models = [
+            first,
             self.cfg.GEMINI_MODEL,
             "gemini-3.1-flash-lite",
             "gemini-3.1-flash-lite-preview",
-            "gemini-3-flash-preview",
             "gemini-flash-lite-latest",
+            # Flash models: only ~20 free requests/day, so they are the last resort.
+            "gemini-3-flash-preview",
             "gemini-3.8-flash",
         ]
         candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
 
         last_err = None
-        for m in candidate_models:
+        for m in available_models(candidate_models):
             try:
                 response = self._client.models.generate_content(
                     model=m,
@@ -89,6 +126,7 @@ class LLMClient:
                     return self._extract_json(text)
             except Exception as e:
                 last_err = e
+                note_model_error(m, e)
                 logger.warning(f"Gemini model {m} encountered: {e}. Trying next candidate...")
 
         raise last_err or RuntimeError("All Gemini candidate models failed.")
@@ -97,16 +135,23 @@ class LLMClient:
         self,
         prompt: str,
         system_prompt: str = "",
-        history: Optional[list] = None
+        history: Optional[list] = None,
+        groq_model: Optional[str] = None,
     ) -> str:
-        """Generate conversational text output using Google Gemini."""
+        """Conversational text: Gemini first, Groq as backup (groq_model= puts that Groq model first)."""
+        if groq_model and self._groq_settings()["key"]:
+            try:
+                return await self._call_groq(prompt, system_prompt, history=history, models=[groq_model])
+            except Exception as e:
+                logger.warning(f"Groq {groq_model} failed, using Gemini: {e}")
         if self._client:
             candidate_models = [
                 self.cfg.GEMINI_MODEL,
                 "gemini-3.1-flash-lite",
                 "gemini-3.1-flash-lite-preview",
-                "gemini-3-flash-preview",
                 "gemini-flash-lite-latest",
+                # Flash models: only ~20 free requests/day, so they are the last resort.
+                "gemini-3-flash-preview",
                 "gemini-3.8-flash",
             ]
             candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
@@ -122,7 +167,7 @@ class LLMClient:
             parts.append(f"User: {prompt}\nAssistant:")
             full_prompt = "\n".join(parts)
 
-            for m in candidate_models:
+            for m in available_models(candidate_models):
                 try:
                     response = self._client.models.generate_content(
                         model=m,
@@ -143,6 +188,7 @@ class LLMClient:
                     if text:
                         return text
                 except Exception as e:
+                    note_model_error(m, e)
                     logger.warning(f"Gemini chat model {m} encountered: {e}. Trying next...")
 
         try:
@@ -166,7 +212,7 @@ class LLMClient:
         return {"key": key, "models": [m.strip() for m in models.split(",") if m.strip()]}
 
     async def _call_groq(self, prompt: str, system_prompt: str = "", json_mode: bool = False,
-                         history: Optional[list] = None) -> str:
+                         history: Optional[list] = None, models: Optional[List[str]] = None) -> str:
         cfg = self._groq_settings()
         if not cfg["key"]:
             raise RuntimeError("GROQ_API_KEY is not set in .env")
@@ -183,7 +229,7 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         last_err: Optional[Exception] = None
-        for model in cfg["models"]:
+        for model in models or cfg["models"]:
             try:
                 kwargs: Dict[str, Any] = {"model": model, "messages": messages,
                                           "temperature": 0.2 if json_mode else 0.7}
@@ -192,7 +238,7 @@ class LLMClient:
                 resp = await asyncio.to_thread(client.chat.completions.create, **kwargs)
                 text = (resp.choices[0].message.content or "").strip()
                 if text:
-                    logger.info(f"Answered by Groq backup model {model}")
+                    logger.info(f"Answered by Groq model {model}")
                     return text
             except Exception as e:
                 last_err = e

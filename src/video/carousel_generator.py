@@ -120,17 +120,18 @@ class CarouselGenerator:
         self.H = 1350
         self.M = 72
 
-    async def generate_carousel_async(self, item: PrioritizedNewsItem) -> List[Path]:
-        """Plans + renders story-specific photos (Gemini-directed), then composes the posts."""
+    async def generate_carousel_async(self, item: PrioritizedNewsItem, total: int = 4) -> List[Path]:
+        """Plans + renders `total` story-specific photos (Gemini-directed), then composes the posts."""
         from src.video.slide_visuals import prepare_post_assets
-        posts, photos = await prepare_post_assets(item)
+        posts, photos = await prepare_post_assets(item, count=total, total=total)
         news_dir = self.output_dir / item.id
         news_dir.mkdir(parents=True, exist_ok=True)
         (news_dir / "assets.json").write_text(
-            json.dumps({"posts": posts, "photos": [str(p) if p else None for p in photos]}, ensure_ascii=False),
+            json.dumps({"total": total, "posts": posts, "photos": [str(p) if p else None for p in photos]},
+                       ensure_ascii=False),
             encoding="utf-8",
         )
-        progress.report("Adding headlines and text on top of the 4 photos...")
+        progress.report(f"Adding headlines and text on top of the {total} photos...")
         return await asyncio.to_thread(self.generate_carousel, item, posts, photos)
 
     def generate_carousel(self, item: PrioritizedNewsItem,

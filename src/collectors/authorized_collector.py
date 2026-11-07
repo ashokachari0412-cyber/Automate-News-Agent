@@ -31,6 +31,10 @@ from src.models.tweet import RawTweet
 logger = logging.getLogger(__name__)
 
 
+# anthropic.com article URL -> publish date (None = page has no date), kept while the server runs.
+_ANTHROPIC_DATES: dict = {}
+
+
 def _parse_iso(value: str):
     """'2026-10-18T00:00:00.000Z' -> aware datetime, or None."""
     try:
@@ -203,13 +207,17 @@ class AuthorizedNewsCollector(BaseCollector):
                         continue
                     seen_urls.add(full_url)
                     candidates.append((full_url, text))
-            # The newest posts come first: check their real publish dates (article:published_time)
-            pages = await asyncio.gather(*(client.get(u) for u, _ in candidates[:8]), return_exceptions=True)
-            for (full_url, text), page in zip(candidates[:8], pages):
+            # The newest posts come first: check their real publish dates (article:published_time).
+            # anthropic.com is slow (2-3 s per page), so a date is fetched once and remembered.
+            todo = [u for u, _ in candidates[:8] if u not in _ANTHROPIC_DATES]
+            pages = await asyncio.gather(*(client.get(u) for u in todo), return_exceptions=True)
+            for url, page in zip(todo, pages):
                 if isinstance(page, Exception) or page.status_code != 200:
                     continue
                 m = re.search(r'article:published_time"\s+content="([^"]+)"', page.text)
-                published = _parse_iso(m.group(1)) if m else None
+                _ANTHROPIC_DATES[url] = _parse_iso(m.group(1)) if m else None
+            for full_url, text in candidates[:8]:
+                published = _ANTHROPIC_DATES.get(full_url)
                 if not published or published < cutoff:
                     continue
                 item_id = hashlib.md5(f"Anthropic:{full_url}".encode()).hexdigest()[:16]

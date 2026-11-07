@@ -32,15 +32,6 @@ class Settings(BaseSettings):
     # Google Gemini Settings (Google AI Pro)
     GEMINI_API_KEY: Optional[str] = Field(default=None)
     GEMINI_MODEL: str = "gemini-3.8-flash"
-    GEMINI_IMAGE_MODEL: str = "gemini-3.1-flash-image"  # legacy single-model setting (kept for compatibility)
-    # Image models tried in order (best first); the next one is used when a model fails or has no quota.
-    GEMINI_IMAGE_MODELS: str = (
-        "gemini-3-pro-image,"          # Nano Banana Pro  - best quality & text/detail fidelity
-        "gemini-nano-banana-2.1,"      # Nano Banana 2.1
-        "gemini-3.1-flash-image,"      # Nano Banana 2    - fast, high quality
-        "gemini-3.1-flash-lite-image," # Nano Banana 2 Lite
-        "gemini-2.5-flash-image"       # Nano Banana      - original
-    )
 
     # News & Research Collection (100% Authorized AI Lab Feeds + Hugging Face)
     COLLECTOR_MODE: Literal["authorized", "auto", "playwright", "syndication", "mock"] = "authorized"
@@ -109,7 +100,7 @@ class Settings(BaseSettings):
     TOP_NEWS_LIMIT: int = 6
     # Backup LLM provider (used only when every Gemini model fails). Free key: console.groq.com -> API Keys
     GROQ_API_KEY: Optional[str] = Field(default=None)
-    GROQ_MODELS: str = "llama-3.3-70b-versatile,openai/gpt-oss-120b,llama-3.1-8b-instant"
+    GROQ_MODELS: str = "openai/gpt-oss-120b,openai/gpt-oss-20b"  # backup order when Gemini fails
     GEMINI_NEWS_SEARCH: bool = True  # second news source: Gemini + Google Search (in addition to the official feeds)
 
     def get_trusted_accounts(self) -> List[TwitterAccountConfig]:
