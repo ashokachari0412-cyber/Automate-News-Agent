@@ -266,7 +266,7 @@ body.alfred-theme {
 }
 
 .workspace-inner {
-  max-width: 680px;
+  max-width: 920px;
   width: 100%;
   margin: 0 auto;
   padding: 30px 20px 20px 20px;
@@ -558,7 +558,7 @@ body.alfred-theme {
 
 .chat-footer {
   padding: 0 20px 20px 20px;
-  max-width: 680px;
+  max-width: 920px;
   width: 100%;
   margin: 0 auto;
 }
@@ -1495,10 +1495,10 @@ a.msg-action-btn {
    ============================================================================== */
 @media (max-width: 640px) {
   .workspace-inner {
-    padding: 20px 10px 16px 10px;
+    padding: 16px 8px 12px 14px; /* a little more room on the left */
   }
   .chat-footer {
-    padding: 0 8px 10px 8px;
+    padding: 0 6px 8px 6px;
   }
   .input-card {
     padding: 10px 10px 8px 10px;
@@ -1506,16 +1506,32 @@ a.msg-action-btn {
   .chat-bubble {
     gap: 8px;
   }
+  /* Replies use the full width: the Alfred icon sits on the name line instead of its own column */
+  .chat-bubble.assistant {
+    display: block;
+    position: relative;
+  }
   .chat-bubble.assistant .bubble-avatar {
-    width: 24px;
-    height: 24px;
-    min-width: 24px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    margin-top: 0;
+  }
+  .chat-bubble.assistant .bubble-sender {
+    padding-left: 30px;
+    min-height: 22px;
+    line-height: 22px;
+    margin-bottom: 4px;
   }
   .chat-bubble.user .bubble-body {
-    max-width: 88%;
+    max-width: 92%;
   }
-  .digest-section {
-    padding: 10px;
+  .digest-section,
+  .video-job {
+    padding: 10px 8px;
   }
   /* The three chips share the line; long labels shrink instead of being cut off */
   .quick-chip {

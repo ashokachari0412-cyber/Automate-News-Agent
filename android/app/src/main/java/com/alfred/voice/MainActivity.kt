@@ -1,11 +1,9 @@
 package com.alfred.voice
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.DownloadManager
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -22,7 +20,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
-/** One app: the full Alfred AI Studio web app, with the hands-free voice assistant running in the background. */
+/** The Alfred AI Studio web app in a full-screen WebView (main route first, backup route if it fails). */
 class MainActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var web: WebView
@@ -83,7 +81,6 @@ class MainActivity : Activity() {
         setContentView(web)
 
         if (savedInstanceState != null) web.restoreState(savedInstanceState)
-        startVoiceIfAllowed()
     }
 
     override fun onResume() {
@@ -113,7 +110,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (web.canGoBack()) web.goBack() else moveTaskToBack(true) // keep Alfred alive in the background
+        if (web.canGoBack()) web.goBack() else moveTaskToBack(true)
     }
 
     @Deprecated("Deprecated in Java")
@@ -122,16 +119,6 @@ class MainActivity : Activity() {
             fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data))
             fileCallback = null
         } else super.onActivityResult(requestCode, resultCode, data)
-    }
-
-    /** "Hey Alfred" mode starts listening with the app; push-to-talk mode needs nothing running. */
-    private fun startVoiceIfAllowed() {
-        if (!prefs.voiceEnabled || !prefs.alwaysListen) return
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            startActivity(Intent(this, SettingsActivity::class.java))
-            return
-        }
-        startForegroundService(Intent(this, AlfredService::class.java))
     }
 
     private fun showOffline(reason: String) {
