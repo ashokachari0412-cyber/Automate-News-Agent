@@ -448,6 +448,7 @@ body.alfred-theme {
 
 .chat-bubble.assistant .bubble-body {
   flex: 1;
+  min-width: 0; /* lets wide rows (avatar strip, image grids) scroll inside instead of stretching the page */
   color: var(--text-primary);
   font-size: 0.92rem;
   line-height: 1.6;
@@ -1875,6 +1876,54 @@ a.msg-action-btn {
 .bubble-text a { color: var(--accent-terracotta); text-decoration: underline; text-underline-offset: 2px; }
 
 /* Video plan: clip headings in the accent, times and notes muted, labels in soft blue */
-.plan-clip { color: var(--accent-terracotta); }
+.md-accent { color: var(--accent-terracotta); }
 .plan-muted { color: var(--text-secondary); font-size: 0.88em; font-weight: 400; }
 .plan-label { color: #7fa7c9; font-weight: 500; }
+
+
+/* Quick action cards: title + one-line description */
+.action-text { display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.action-sub { font-size: 0.76rem; font-weight: 400; color: var(--text-secondary); }
+
+/* Option cards (e.g. AI Updates: Official news / Google search) */
+.option-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+  max-width: 540px;
+}
+.option-card {
+  display: flex; flex-direction: column; gap: 3px; text-align: left;
+  padding: 12px 14px; border-radius: 12px; cursor: pointer; font: inherit;
+  border: 1px solid var(--border-light); background: var(--bg-card); color: var(--text-primary);
+  transition: border-color 0.15s, background 0.15s;
+}
+.option-card:hover:not(:disabled) { border-color: var(--border-focus); background: var(--bg-card-hover); }
+.option-card.active { border-color: var(--accent-terracotta); background: rgba(217, 119, 87, 0.12); }
+.option-card:disabled:not(.active) { opacity: 0.45; cursor: default; }
+.option-title { font-weight: 600; font-size: 0.92em; }
+.option-sub { font-size: 0.8em; color: var(--text-secondary); }
+
+/* Chosen step in Image / Video / length rows: clearly filled, not just an outline */
+.script-steps .msg-action-btn.active {
+  background: rgba(217, 119, 87, 0.16);
+  border-color: var(--accent-terracotta);
+  color: var(--text-primary);
+}
+
+/* Image prompt editor: room between boxes; boxes grow with the text */
+.prompt-label { margin-top: 12px; margin-bottom: 4px; }
+.image-prompt-edit textarea { overflow: hidden; resize: none; }
+
+/* Modify + Download side by side under each image */
+.cell-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.cell-actions .msg-action-btn { padding: 5px 12px; font-size: 0.82em; }
+
+/* Image grids sized to the number of images (2 per row on phones) */
+.slide-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.slide-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.slide-grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 600px) {
+  .slide-grid.cols-3, .slide-grid.cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

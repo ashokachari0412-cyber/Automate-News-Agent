@@ -16,7 +16,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alfred" />
-  <link rel="stylesheet" href="styles.css?v=26" />
+  <link rel="stylesheet" href="styles.css?v=27" />
 </head>
 <body class="alfred-theme">
 
@@ -71,46 +71,43 @@
           </div>
 
           <h1 class="hero-title">Welcome, Ashok</h1>
-          <p class="hero-subtitle">Your personal intelligence butler is ready. Choose a quick action below or type a custom request.</p>
+          <p class="hero-subtitle">Your AI content studio is ready. Pick a quick action or just type what you need.</p>
 
           <!-- 2x2 Quick Action Cards Grid -->
           <div class="action-grid">
-            <button class="action-card" data-prompt="Scan the latest 24h AI breaking news across all authorized labs and summarize the top discoveries.">
+            <button class="action-card" data-action="updates">
               <div class="action-card-left">
                 <div class="action-icon-box">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>
                 </div>
-                <span class="action-title">Scan News</span>
+                <div class="action-text"><span class="action-title">AI Updates</span><span class="action-sub">Today's AI news · official or Google</span></div>
               </div>
               <svg class="action-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             </button>
-
-            <button class="action-card" data-prompt="Summarize my priority briefings, newsletters, and incoming updates for today.">
+            <button class="action-card" data-action="video" data-fill="Make a video about ">
               <div class="action-card-left">
                 <div class="action-icon-box">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="14" height="14" rx="2"/><path d="m16 10 6-4v12l-6-4"/></svg>
                 </div>
-                <span class="action-title">Summarize Emails</span>
+                <div class="action-text"><span class="action-title">Make a Video</span><span class="action-sub">From a topic or your own script</span></div>
               </div>
               <svg class="action-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             </button>
-
-            <button class="action-card" data-prompt="Analyze our AI news automation code, collectors, and prompt architecture.">
+            <button class="action-card" data-action="images" data-fill="Make images of ">
               <div class="action-card-left">
                 <div class="action-icon-box">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>
                 </div>
-                <span class="action-title">Analyze Code</span>
+                <div class="action-text"><span class="action-title">Make Images</span><span class="action-sub">1-6 images from your idea</span></div>
               </div>
               <svg class="action-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             </button>
-
-            <button class="action-card" data-prompt="Brainstorm 5 high-impact viral content ideas for @ashok_a.i based on the latest AI trends.">
+            <button class="action-card" data-action="monitor">
               <div class="action-card-left">
                 <div class="action-icon-box">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h16M12 16v4"/></svg>
                 </div>
-                <span class="action-title">Brainstorm Ideas</span>
+                <div class="action-text"><span class="action-title">Creator Monitor</span><span class="action-sub">What your creators posted in 3 days</span></div>
               </div>
               <svg class="action-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
             </button>
@@ -133,7 +130,7 @@
           </button>
           <button class="quick-chip" id="ai-updates-btn" type="button" title="Scan the latest 24h AI news">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49"/></svg>
-            <span class="lbl-full">AI Updates</span><span class="lbl-short">AI News</span>
+            <span class="lbl-full">AI Updates</span><span class="lbl-short">AI Updates</span>
           </button>
           <button class="quick-chip" id="content-monitor-btn" type="button" title="See what the creators you follow posted in the last 3 days">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
@@ -195,7 +192,7 @@
     <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   </div>
 
-  <script src="app.js?v=29"></script>
+  <script src="app.js?v=31"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW registration failed:", e));

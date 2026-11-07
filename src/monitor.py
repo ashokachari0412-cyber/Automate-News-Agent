@@ -220,22 +220,25 @@ def _post_line(i: int, p: Dict[str, Any]) -> str:
 
 
 def brief_markdown(brief: Dict[str, Any]) -> str:
-    posts, lines = brief["posts"], [f"**Content-Monitor** · last {brief['days']} days · "
-                                     f"{brief['creators_ok']} of {brief['creators_total']} creators read", ""]
+    # Layout for the web app: whole-line bold headings, "::meta" = small coloured stats line, labels coloured.
+    posts, lines = brief["posts"], ["**Content-Monitor**",
+                                    f"::meta Last {brief['days']} days · {brief['creators_ok']} of "
+                                    f"{brief['creators_total']} creators read", ""]
     if brief.get("trends"):
         lines += ["**Trending now**"] + [f"- {t}" for t in brief["trends"]] + [""]
     if brief.get("top"):
-        lines.append("**Breakout posts**")
+        lines += ["**Breakout posts**", ""]
         for k, t in enumerate(brief["top"], 1):
             p = posts[t["n"] - 1]
             stats = f"{p['likes']:,} likes" if p["likes"] is not None else "likes hidden"
-            boost = f" · **{p['breakout']}× their usual**" if p["breakout"] else ""
+            boost = f" · {p['breakout']}× their usual" if p["breakout"] else ""
             fresh = " · 🆕 still growing" if p["age_hours"] < 24 else ""
-            lines += [f"**#{k} @{p['creator']}** ({p['type']}) · {stats} · {p['comments']:,} comments{boost}{fresh}",
+            lines += [f"**#{k} @{p['creator']} · {p['type']}**",
+                      f"::meta {stats} · {p['comments']:,} comments{boost}{fresh}",
                       f"Hook: {(p.get('video') or {}).get('hook') or p['caption'][:120]}",
                       f"Why it worked: {t.get('why', '')}",
                       f"Your angle: {t.get('angle', '')}",
-                      f"[Open post]({p['url']})", ""]
+                      f"[Open post ↗]({p['url']})", ""]
     if brief.get("patterns"):
         lines += ["**What each creator is doing**"] + [f"- @{x['creator']}: {x['pattern']}" for x in brief["patterns"]] + [""]
     if brief.get("errors"):

@@ -143,10 +143,18 @@
   function setupActionCards() {
     actionCards.forEach((card) => {
       card.addEventListener("click", () => {
-        const prompt = card.dataset.prompt;
-        if (prompt && !isGenerating) {
-          sendPrompt(prompt);
+        if (isGenerating) return;
+        const action = card.dataset.action;
+        if (action === "updates") return aiUpdatesBtn.click();
+        if (action === "monitor") return contentMonitorBtn.click();
+        if (card.dataset.fill) {  // start the sentence for him; he finishes it and presses send
+          chatInput.value = card.dataset.fill;
+          chatInput.focus();
+          chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
+          chatInput.dispatchEvent(new Event("input"));
+          return;
         }
+        if (card.dataset.prompt) sendPrompt(card.dataset.prompt);
       });
     });
   }
@@ -162,9 +170,9 @@
   }
 
   const NEWS_SOURCES = {
-    official: { label: "Official news", prompt: "AI Updates: official news",
+    official: { label: "Official news", sub: "21 AI labs, research & tech sites", prompt: "AI Updates: official news",
                 wait: "Reading the official AI lab and tech feeds (about 1 minute)..." },
-    google: { label: "Google search", prompt: "AI Updates: Google search",
+    google: { label: "Google search", sub: "9 areas: AI, gadgets, viral, India, creators", prompt: "AI Updates: Google search",
               wait: "Searching Google for today's AI news (about 1 minute)..." },
   };
 
@@ -522,7 +530,8 @@
       block.className = "carousel-block";
 
       const grid = document.createElement("div");
-      grid.className = "slide-grid";
+      const n = data.slides.length;
+      grid.className = n === 1 ? "slide-grid" : `slide-grid cols-${n === 4 || n === 2 ? n : 3}`;
       const slideUrls = [...data.slides];
       data.slides.forEach((url, i) => {
         const cell = document.createElement("div");
@@ -764,14 +773,17 @@
       const areas = prompts.map((p, i) => {
         if (prompts.length > 1) {
           const lbl = document.createElement("div");
-          lbl.className = "format-choice-title";
+          lbl.className = "format-choice-title prompt-label";
           lbl.textContent = `Image ${i + 1}`;
           wrap.appendChild(lbl);
         }
         const area = document.createElement("textarea");
         area.className = "caption-box caption-edit";
         area.value = p;
-        area.rows = prompts.length > 1 ? 3 : 5;
+        area.rows = 2;
+        const fit = () => { area.style.height = "auto"; area.style.height = `${area.scrollHeight + 2}px`; };
+        area.addEventListener("input", fit);
+        requestAnimationFrame(fit);  // after it is on the page, so the height is known
         wrap.appendChild(area);
         return area;
       });
@@ -803,7 +815,7 @@
       const block = document.createElement("div");
       block.className = "carousel-block";
       const grid = document.createElement("div");
-      grid.className = "slide-grid";
+      grid.className = `slide-grid cols-${Math.min(data.image_urls.length === 4 ? 4 : 3, data.image_urls.length)}`;
       const urls = [...data.image_urls];
       urls.forEach((url, i) => {
         const cell = document.createElement("div");
@@ -823,12 +835,17 @@
         dl.className = "msg-action-btn";
         dl.href = downloadUrl(url);
         dl.download = `alfred-image-${i + 1}.png`;
-        dl.textContent = "Download";
-        cell.appendChild(dl);
+        dl.textContent = "⬇ Download";
+        const actions = document.createElement("div");
+        actions.className = "cell-actions";
+        const modify = cell.querySelector(".modify-btn");
+        cell.insertBefore(actions, modify);
+        actions.appendChild(modify);
+        actions.appendChild(dl);
         grid.appendChild(cell);
       });
       block.appendChild(grid);
-      const receipt = renderUsage(data.usage && { ...data.usage, kind: "image" });
+      const receipt = renderUsage(data.usage && { ...data.usage, kind: "image set" });
       if (receipt) block.appendChild(receipt);
       body.appendChild(block);
     }
@@ -849,14 +866,22 @@
 
     if (data.action === "news_source") {
       const row = document.createElement("div");
-      row.className = "msg-actions";
-      Object.entries(NEWS_SOURCES).forEach(([key, s], i) => {
-        row.appendChild(makeButton(s.label, i === 0, () => {
+      row.className = "option-row";
+      Object.entries(NEWS_SOURCES).forEach(([key, src]) => {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "option-card";
+        card.innerHTML = `<span class="option-title"></span><span class="option-sub"></span>`;
+        card.querySelector(".option-title").textContent = src.label;
+        card.querySelector(".option-sub").textContent = src.sub;
+        card.addEventListener("click", () => {
           if (isGenerating) return;
+          card.classList.add("active");
           row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
           aiUpdatesBtn.disabled = true;
-          sendPrompt(s.prompt, s.wait, "news_scan", { news_source: key }).finally(() => (aiUpdatesBtn.disabled = false));
-        }));
+          sendPrompt(src.prompt, src.wait, "news_scan", { news_source: key }).finally(() => (aiUpdatesBtn.disabled = false));
+        });
+        row.appendChild(card);
       });
       body.appendChild(row);
     }
@@ -1067,7 +1092,7 @@
     }).join("");
     const others = Object.entries(usage.balances || {}).filter(([svc, v]) => v != null && !(svc in (usage.per_service || {})))
       .map(([svc, v]) => `${escapeHtml(svc)} ${money(v)} left`).join(" · ");
-    el.innerHTML = `<div class="usage-title">Cost of this ${usage.kind || "render"} · <b>${money(usage.total_usd)}</b></div>
+    el.innerHTML = `<div class="usage-title">Cost of ${usage.kind === "image set" ? "these images" : `this ${usage.kind || "render"}`} · <b>${money(usage.total_usd)}</b></div>
       ${usage.items.length ? `<table class="usage-table">${rows}</table>
       <div class="usage-sub">Per service</div><table class="usage-table">${services}</table>`
         : `<div class="usage-note">No paid service was used.</div>`}
@@ -1152,7 +1177,7 @@
       <div class="modify-actions"></div><div class="modify-status"></div>`;
     const input = form.querySelector("textarea");
     const status = form.querySelector(".modify-status");
-    const toggle = makeButton("✎ Modify", false, () => {
+    const toggle = makeButton("✎ Edit", false, () => {
       form.classList.toggle("hidden");
       if (!form.classList.contains("hidden")) input.focus();
     });
@@ -1968,6 +1993,8 @@
       // [text](https://...) links, opened in a new tab
       .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)"]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
       // "::meta ..." = small coloured info line (impact, category, source) at the end of a news story
+      // (a single line break after it is dropped: the line is already a block, so <br> would add a gap)
+      .replace(/^::meta (.+)\n(?!\n)/gm, '<span class="news-meta">$1</span>')
       .replace(/^::meta (.+)$/gm, '<span class="news-meta">$1</span>')
       .replace(/^#{1,4}\s+(.+)$/gm, "<strong>$1</strong>")
       .replace(/^\s*[*-]\s+/gm, "• ")
@@ -1979,9 +2006,9 @@
       .replace(/^(\W{0,3}\s*)\*\*([^*\n]{1,40}:)\*\*/gm, "$1<strong>$2</strong>")
       .replace(/\*\*(.*?)\*\*/g, "$1")
       // Video plan colours: clip heading (accent) + time (muted), labels (soft blue), hook label (accent)
-      .replace(/^<strong>(Clip \d+) \(([^)\n]+)\)<\/strong>/gm, '<strong class="plan-clip">$1</strong> <span class="plan-muted">$2</span>')
-      .replace(/^(Says|Top shows|Shows|Text on screen):/gm, '<span class="plan-label">$1:</span>')
-      .replace(/^<strong>Hook:<\/strong>/gm, '<strong class="plan-clip">Hook:</strong>')
+      .replace(/^<strong>(Clip \d+) \(([^)\n]+)\)<\/strong>/gm, '<strong class="md-accent">$1</strong> <span class="plan-muted">$2</span>')
+      .replace(/^(Says|Top shows|Shows|Text on screen|Hook|Why it worked|Your angle):/gm, '<span class="plan-label">$1:</span>')
+      .replace(/^<strong>Hook:<\/strong>/gm, '<strong class="md-accent">Hook:</strong>')
       .replace(/^((?:Top half|No avatar): [^\n]+)$/gm, '<span class="plan-muted">$1</span>')
       .replace(/\*(.*?)\*/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
