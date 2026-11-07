@@ -68,7 +68,7 @@ class ResearchNodes:
         try:
             if sources == "google":  # only Gemini + Google Search
                 from src.collectors.gemini_search import search_ai_news_wide
-                progress.report("Searching Google for AI news of the last 24 hours (models, tools, research, business)...")
+                progress.report("Searching Google in 9 areas: AI models, tools, research, business, viral, gadgets, tech, India, creator platforms...")
                 tweets = await search_ai_news_wide(settings.MAX_TWEET_AGE_HOURS)
                 logger.info(f"Google Search only: {len(tweets)} stories.")
                 return {"raw_tweets": tweets, "accounts": accounts}

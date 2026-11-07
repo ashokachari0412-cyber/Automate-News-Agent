@@ -937,8 +937,13 @@ ROUTER_PROMPT = """You route Master Ashok's latest chat message to ONE action of
 meaning of HIS message (use the recent conversation only to resolve references like "that one" or "the second story").
 
 Actions:
-- "chat": greetings, small talk, opinions, general knowledge, explanations, questions about a news story's content.
-- "news": he asks to GET the latest AI news / updates / digest now (not questions ABOUT a scan or the news feature).
+- "chat": greetings, small talk, opinions, timeless general knowledge, explanations, questions about a news
+  story's content that is already in the digest.
+- "search": a factual question that needs TODAY's web: a recent event, what someone said or announced, a new
+  release, a current price/number/date, "latest" facts about ONE specific thing or person.
+- "news": he asks to GET the AI news digest now ("latest AI news", "scan the news", "what's new in AI today").
+  A question about ONE specific event, quote, person or product is NEVER news (that is "search"), and neither
+  is a question ABOUT a scan or the news feature.
 - "carousel": he wants Instagram carousel images / photos / slides for a news story.
 - "single_image": he wants ONE branded post image for a news story (single photo, or a LinkedIn post image).
 - "video_script": he wants a video / reel / YouTube Short made, about a news story OR any topic he describes.
@@ -955,11 +960,45 @@ Recent conversation:
 
 His message: "{message}"
 
-Return ONLY JSON: {{"intent": "chat|news|carousel|single_image|video_script|image|script|google",
+Return ONLY JSON: {{"intent": "chat|search|news|carousel|single_image|video_script|image|script|google",
 "story": <story number from the digest or null>, "brand": "instagram|linkedin|null",
 "fresh_scan": <true if he asks for the latest/new/today's news or a scan, else false>}}"""
 
-INTENTS = {"chat", "news", "carousel", "single_image", "video_script", "image", "script", "google"}
+INTENTS = {"chat", "search", "news", "carousel", "single_image", "video_script", "image", "script", "google"}
+
+WEB_ANSWER_PROMPT = """Today is {today}. Use Google Search to answer Master Ashok's question with CURRENT, accurate facts.
+
+Recent conversation (context only):
+{history}
+
+His question: "{question}"
+
+Answer as Alfred, in simple English and short paragraphs. If he asks what someone said, give the event name, the
+date and the closest exact words you found (in quotes), and say plainly if the exact wording isn't confirmed.
+If you can't find it, say so honestly - never guess or invent a quote, event or date."""
+
+
+def _web_answer_sync(question: str, history: List[Dict[str, str]]) -> Dict[str, Any]:
+    from google.genai import types
+    from src.google_workspace.agent import generate_with_fallback
+
+    recent = "\n".join(f"{h['role']}: {' '.join(h['content'].split())[:300]}" for h in history[-4:]) or "(none)"
+    prompt = ALFRED_SYSTEM_PROMPT + "\n\n" + WEB_ANSWER_PROMPT.format(
+        today=time.strftime("%Y-%m-%d"), history=recent, question=question[:1000])
+    config = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())], temperature=0.3)
+    resp = generate_with_fallback(prompt, config, wait=False)
+    sources, seen = [], set()
+    try:
+        for chunk in resp.candidates[0].grounding_metadata.grounding_chunks or []:
+            if chunk.web and chunk.web.uri and (chunk.web.title or chunk.web.uri) not in seen:
+                seen.add(chunk.web.title or chunk.web.uri)
+                sources.append(f"[{chunk.web.title or 'source'}]({chunk.web.uri})")
+    except Exception:
+        pass
+    reply = (resp.text or "").strip()
+    if sources:
+        reply += "\n\n::meta Sources: " + " · ".join(sources[:5])
+    return {"reply": reply, "author": "Alfred"}
 
 
 def _keyword_route(msg_lower: str) -> Dict[str, Any]:
@@ -1292,6 +1331,14 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         return _ask_what_to_make(req.message, "image")
     if intent == "script":  # a script / idea to turn into content: Image · Video · Just answer it
         return _ask_what_to_make(req.message)
+    if intent == "search":  # needs today's facts: answer with Google Search (falls back to normal chat below)
+        progress.report("Searching the web for the latest facts...")
+        try:
+            answer = await asyncio.to_thread(_web_answer_sync, req.message, history)
+            if answer["reply"]:
+                return answer
+        except Exception as e:
+            logger.warning(f"Web answer failed, answering from memory: {str(e)[:160]}")
 
     # 4. General conversational query with persistent memory
     context_lines = []

@@ -51,6 +51,11 @@ WIDE_FOCUSES = [
     "new AI tools, apps and product features people can use (video, image, coding, agents, assistants)",
     "important AI research papers and open-source AI model or framework releases",
     "big AI business news: funding, acquisitions, chips and AI hardware, regulation",
+    "viral AI and tech moments: demos, controversies or posts blowing up on X, Reddit or YouTube",
+    "consumer tech launches: new phones, laptops, wearables, gadgets and EVs (Apple, Samsung, Google Pixel and others)",
+    "big non-AI tech news: major outages, cybersecurity incidents, space tech, tech layoffs",
+    "AI and tech news from India: Indian AI startups, big Indian tech companies' AI moves, government AI rules",
+    "new features on Instagram, YouTube, TikTok and other creator platforms that content creators should know about",
 ]
 
 
@@ -142,5 +147,5 @@ async def search_ai_news_wide(hours: int = 24, limit_each: int = 6) -> List[RawT
             if t.id not in seen and key not in seen:
                 seen.update({t.id, key})
                 merged.append(t)
-    logger.info(f"Gemini + Google Search (4 areas) found {len(merged)} stories.")
+    logger.info(f"Gemini + Google Search ({len(WIDE_FOCUSES)} areas) found {len(merged)} stories.")
     return merged
