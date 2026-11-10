@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import httpx
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -197,6 +197,7 @@ class CreatorsRequest(BaseModel):
 class PlanEditRequest(BaseModel):
     scenes: List[Dict[str, Any]]
     title: Optional[str] = None
+    style: Optional[str] = None  # Recorded Vid: the look shared by every AI image of the video
 
 
 class SchedulePostRequest(BaseModel):
@@ -471,7 +472,7 @@ async def studio_job_voice(job_id: str, clip: Optional[int] = None, voice_id: Op
 async def studio_job_plan_edit(job_id: str, payload: PlanEditRequest):
     """His edits to the clips before Render; timings and the estimate are recalculated."""
     try:
-        return studio.update_plan(job_id, payload.scenes, payload.title)
+        return studio.update_plan(job_id, payload.scenes, payload.title, payload.style)
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found")
     except ValueError as e:
@@ -514,6 +515,52 @@ async def studio_job_cancel(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+RECORDING_MAX_BYTES = 600 * 1024 * 1024  # a 1-2 minute phone video at full quality
+
+
+@app.post("/api/v1/studio/recorded")
+async def studio_recorded(file: UploadFile = File(...), job_id: Optional[str] = Form(None)):
+    """"Recorded Vid": his own (Telugu) video. Alfred shows the transcript, what it understood and the top-half
+    visuals as an editable plan; nothing paid runs until he taps Render. Saved to the chat like any reply."""
+    name = os.path.basename(file.filename or "video.mp4")
+    ext = (os.path.splitext(name)[1] or ".mp4").lower()
+    if not re.fullmatch(r"\.(mp4|mov|m4v|3gp|webm|mkv)", ext):
+        raise HTTPException(status_code=415, detail="Attach a video (mp4, mov, webm...).")
+    studio.STUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    upload = studio.STUDIO_DIR / f"upload_{int(time.time() * 1000)}{ext}"
+    size = 0
+    with open(upload, "wb") as out:
+        while chunk := await file.read(4 * 1024 * 1024):
+            size += len(chunk)
+            if size > RECORDING_MAX_BYTES:
+                out.close()
+                upload.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="The video is larger than 600 MB.")
+            out.write(chunk)
+    progress.start(job_id)
+    try:
+        job = await studio.start_recorded_job(upload)
+        reply = ("Here's what I understood from your video:\n\n" + studio.plan_markdown(job["plan"]) +
+                 "\n\nNothing has been rendered yet. " + _estimate_text(job["estimate"]) +
+                 " Edit the clips if you like, then tap Render.")
+        response = {"reply": reply, "author": "Alfred", "action": "video_job", "job_id": job["id"]}
+    except Exception as e:
+        logger.error(f"Recorded video failed: {e}")
+        response = {"reply": f"I couldn't read your video, Master Ashok: {e}", "author": "Alfred"}
+    finally:
+        progress.finish(job_id)
+        upload.unlink(missing_ok=True)  # the cleaned copy is kept; the raw upload is large
+    memory = storage.load_memory()
+    memory.setdefault("messages", []).append({"role": "user", "content": f"🎥 Recorded video: {name}"})
+    memory["messages"].append({"role": "assistant", "content": response["reply"],
+                               **{k: v for k, v in response.items() if k not in ("reply", "author")}})
+    try:
+        storage.save_memory(memory)
+    except Exception as e:
+        logger.warning(f"Failed to save chat memory: {e}")
+    return response
 
 
 @app.get("/api/v1/studio/jobs/{job_id}")
@@ -1113,6 +1160,8 @@ def _estimate_text(est: Dict[str, Any]) -> str:
     top = {"wan": "Wan 2.6 Flash", "omni_flash": "Gemini Omni Flash"}.get(est["top_engine"], "free zoom/pan")
     if est.get("type") == "normal":
         return f"Estimated cost: about ₹{est['total_inr']} (images + {top} clips, no HeyGen)."
+    if est.get("type") == "recorded":
+        return f"Estimated cost: about ₹{est['total_inr']} (top-half images + {top} clips; your own video, no HeyGen)."
     return (f"Estimated cost: about ₹{est['total_inr']} (HeyGen ₹{est['heygen_inr']} "
             f"+ top half {top} ₹{est['content_inr']}).")
 
@@ -1211,6 +1260,8 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
     elif req.mode == "news_images":  # Img#N -> how many images: 1 = single post, 2-6 = Instagram carousel
         route = {"intent": "single_image" if (req.image_count or 4) == 1 else "carousel", "story": req.story,
                  "brand": "linkedin" if req.brand == "linkedin" else "instagram", "fresh_scan": False}
+    elif req.mode == "telugu_script":  # తెలుగు button under story #N: a Tenglish script for him to say
+        route = {"intent": "telugu_script", "story": req.story, "brand": None, "fresh_scan": False}
     elif req.mode == "chat_only":
         route = {"intent": "chat", "story": None, "brand": None, "fresh_scan": False}
     else:
@@ -1266,11 +1317,10 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
         for i, item in enumerate(top_items, 1):
             score = round(item.scores.total) if getattr(item, "scores", None) else 95
             source = f"{item.origin} · {item.source_name}" if item.source_name else item.origin
+            # Only the description of the update: title + summary (bullets / why it matters stay in the cache for
+            # images, videos and the Telugu script)
             item_lines = [f"**{i}. {item.title}**", f"{item.summary}"]
-            if item.key_bullet_points:
-                item_lines.append("• " + "\n• ".join(item.key_bullet_points[:2]))
-            item_lines.append(f"💡 **Why it matters:** {item.why_it_matters}")
-            # "::meta" = small, coloured info line at the end of the story (styled by the web app)
+            # "::meta" = small, coloured info line at the end of the story; the app adds the తెలుగు button to it
             item_lines.append(f"::meta Impact: {score}/100 · Category: {item.category} · Source: {source}")
             digest_blocks.append("\n".join(item_lines))
 
@@ -1306,6 +1356,21 @@ async def _handle_chat(req: AlfredChatRequest, history: List[Dict[str, str]], la
             if nid and nid in _cached_news:
                 return _cached_news[nid]
         return items[0]
+
+    # 1b. Intent: Tenglish talking script for one story (written, reviewed and rewritten until it passes)
+    if intent == "telugu_script":
+        from src import telugu_script
+        target = find_target_news()
+        if not target:
+            return {"reply": "I don't have any AI updates yet, Master Ashok. Tap AI Updates first.", "author": "Alfred"}
+        progress.report(f"Writing a Telugu script for \"{target.title[:60]}\"...")
+        try:
+            script = await telugu_script.write_script(target, _llm_client, model=studio.SCRIPT_MODEL)
+        except Exception as e:
+            logger.error(f"Telugu script failed: {e}")
+            return {"reply": f"I couldn't write the Telugu script just now, Master Ashok: {e}", "author": "Alfred"}
+        return {"reply": telugu_script.script_markdown(script, target.title), "author": "Alfred",
+                "action": "telugu_script", "script_text": telugu_script.full_text(script), "news_id": target.id}
 
     # 2. Intent: Generate Carousel / Images / Slides
     if intent in ("carousel", "single_image"):

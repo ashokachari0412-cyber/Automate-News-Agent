@@ -35,6 +35,7 @@
     setupInputEvents();
     setupActionCards();
     setupAiUpdatesButton();
+    setupRecordedButton();
     setupModeChips();
     setupTermPopover();
     setupHistoryDrawer();
@@ -209,6 +210,60 @@
       appendMessage("assistant", "Where should I look for the latest AI news, Master Ashok?", { action: "news_source" });
       scrollToBottom();
     });
+  }
+
+  // "Recorded Vid" chip: he picks his own video; it uploads (with %), then Alfred shows the Telugu transcript,
+  // what it understood and the top-half visuals as an editable plan (same Render / Edit clips flow as the clone video).
+  function setupRecordedButton() {
+    const btn = document.getElementById("recorded-vid-btn");
+    const input = document.getElementById("recorded-input");
+    btn.addEventListener("click", () => { if (!isGenerating) input.click(); });
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0];
+      input.value = "";
+      if (file) uploadRecorded(file);
+    });
+  }
+
+  function uploadRecorded(file) {
+    if (heroSection) heroSection.classList.add("hidden");
+    appendMessage("user", `🎥 Recorded video: ${file.name}`);
+    isGenerating = true;
+    sendBtn.disabled = true;
+    const thinkingId = appendThinkingBubble("Uploading your video... 0%");
+    const label = () => document.querySelector(`#${thinkingId} .thinking-state span`);
+    const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let stopProgress = () => {};
+    const done = (reply, data) => {
+      stopProgress();
+      removeElement(thinkingId);
+      appendMessage("assistant", reply, data);
+      isGenerating = false;
+      sendBtn.disabled = chatInput.value.trim().length === 0;
+    };
+    const form = new FormData();
+    form.append("file", file);
+    form.append("job_id", jobId);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/v1/studio/recorded");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && label()) label().textContent = `Uploading your video... ${Math.round(100 * e.loaded / e.total)}%`;
+    };
+    xhr.upload.onload = () => {
+      if (label()) label().textContent = "Watching and listening to your video...";
+      stopProgress = watchProgress(jobId, thinkingId);
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch (e) { /* not JSON */ }
+      if (xhr.status >= 400 || !data.reply) {
+        done(`I couldn't take that video, Master Ashok: ${data.detail || `HTTP ${xhr.status}`}`);
+      } else {
+        done(data.reply, data);
+      }
+    };
+    xhr.onerror = () => done("The upload was interrupted, Master Ashok. Please try again.");
+    xhr.send(form);
   }
 
   const NEWS_SOURCES = {
@@ -1027,6 +1082,36 @@
       vidSection.row.classList.add("num-row");
 
       highlightTerms(body.querySelector(".bubble-text"), data.items.flatMap((it) => it.terms || []));
+
+      // తెలుగు on each story's score line: a natural Tenglish script (hook + clips) for him to say on camera
+      body.querySelectorAll(".bubble-text .news-meta").forEach((meta, i) => {
+        if (i >= data.items.length) return;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "telugu-btn";
+        btn.textContent = "తెలుగు";
+        btn.title = "Telugu (Tenglish) script to record for this update";
+        btn.addEventListener("click", () => {
+          if (!isGenerating) sendPrompt(`తెలుగు script for story #${i + 1}`, "Writing and checking your Telugu script...",
+            "telugu_script", { story: i + 1 });
+        });
+        meta.appendChild(btn);
+      });
+    }
+
+    if (data.action === "telugu_script" && data.script_text) {
+      const row = document.createElement("div");
+      row.className = "msg-actions";
+      row.appendChild(makeButton("Copy script", true, async (btn) => {
+        try {
+          await navigator.clipboard.writeText(data.script_text);
+          btn.textContent = "Copied ✓";
+        } catch (e) {
+          btn.textContent = "Couldn't copy";
+        }
+        setTimeout(() => { btn.textContent = "Copy script"; }, 1800);
+      }));
+      body.appendChild(row);
     }
   }
 
@@ -1331,6 +1416,12 @@
     return { button, el };
   }
 
+  // Recorded Vid: what each clip shows. "none" = just him, full screen; the rest fill the floating window on top.
+  const VISUAL_TYPES = [["none", "Just you"], ["diagram", "Diagram with arrows (free)"], ["text", "Text / number (free)"],
+    ["logo", "Logos (free)"], ["photo", "Motion photo (AI image)"], ["video", "AI video clip"]];
+  const visualTypeOf = (s) => (VISUAL_TYPES.some(([id]) => id === s.visual_type) ? s.visual_type
+    : (s.needs_visual === false ? "none" : "video"));
+
   // Before Render: every clip editable. Clone: what he says + what the top half shows. Normal: what's shown,
   // the motion, the text on screen and the clip length. The times update while he types.
   function buildPlanEditor(jobId, onSaved) {
@@ -1342,9 +1433,18 @@
       if (!plan) { el.textContent = "Couldn't load the plan."; return; }
       el.textContent = "";
       const normal = plan.type === "normal";
+      const recorded = plan.type === "recorded"; // his own video: clips start where his speech moves on
       const scenes = plan.scenes.map((s) => ({ ...s }));
-      const durOf = (s) => (normal ? Math.max(2, Math.min(15, Math.round(+s.seconds || 5)))
-        : Math.max(2, (s.spoken || "").trim().split(/\s+/).filter(Boolean).length / WORDS_PER_SECOND));
+      const recEnd = +plan.recording_sec || 0;
+      const durOf = (s) => {
+        if (recorded) {
+          const i = scenes.indexOf(s);
+          const next = i + 1 < scenes.length ? +scenes[i + 1].start_sec || 0 : recEnd;
+          return Math.max(0, next - (i === 0 ? 0 : +s.start_sec || 0));
+        }
+        return normal ? Math.max(2, Math.min(15, Math.round(+s.seconds || 5)))
+          : Math.max(2, (s.spoken || "").trim().split(/\s+/).filter(Boolean).length / WORDS_PER_SECOND);
+      };
       const list = document.createElement("div");
       const totalLine = document.createElement("div");
       totalLine.className = "plan-total";
@@ -1352,10 +1452,12 @@
         let t = 0;
         list.querySelectorAll(".plan-clip").forEach((card, i) => {
           const d = durOf(scenes[i]);
+          if (recorded) t = i === 0 ? 0 : +scenes[i].start_sec || 0;
           card.querySelector(".plan-clip-time").textContent = `Clip ${i + 1} · ${fmt(t)}-${fmt(t + d)}`;
           t += d;
         });
-        totalLine.textContent = `Total about ${Math.round(t)} s${normal ? "" : " (final timings follow your real voice)"}`;
+        totalLine.textContent = recorded ? `Your video: ${Math.round(recEnd)} s (clips are put in order of their start)`
+          : `Total about ${Math.round(t)} s${normal ? "" : " (final timings follow your real voice)"}`;
       };
       const field = (label, value, rows, onInput) => {
         const wrap = document.createElement("label");
@@ -1385,10 +1487,66 @@
             head.appendChild(del);
           }
           card.appendChild(head);
-          if (!normal) card.appendChild(field("Says", s.spoken, 2, (v) => { s.spoken = v; }));
-          card.appendChild(field(normal ? "Shows (image prompt)" : "Top half shows (image prompt)", s.visual, 3,
-            (v) => { s.visual = v; }));
-          card.appendChild(field("Motion", s.motion, 2, (v) => { s.motion = v; }));
+          if (!normal) card.appendChild(field(recorded ? "You say (Telugu)" : "Says", s.spoken, 2, (v) => { s.spoken = v; }));
+          if (recorded) {  // Gemini's pick; "Just you" = full screen, anything else = the floating window on top
+            const vt = visualTypeOf(s);
+            const pick = document.createElement("label");
+            pick.className = "plan-field plan-visual-type";
+            pick.innerHTML = `<span>Visual</span>`;
+            const sel = document.createElement("select");
+            sel.className = "schedule-input";
+            VISUAL_TYPES.forEach(([id, label]) => {
+              sel.insertAdjacentHTML("beforeend", `<option value="${id}"${id === vt ? " selected" : ""}>${escapeHtml(label)}</option>`);
+            });
+            sel.addEventListener("change", () => { s.visual_type = sel.value; render(); });
+            pick.appendChild(sel);
+            if (s.why) pick.insertAdjacentHTML("beforeend", `<small>${escapeHtml(s.why)}</small>`);
+            card.appendChild(pick);
+            const lines = (items, withDomain) => (items || [])
+              .map((it) => (withDomain && it.domain ? `${it.text} | ${it.domain}` : it.text)).join("\n");
+            const toItems = (text, withDomain) => {  // keeps each line's timing (when he says it) by position
+              const old = s.items || [];
+              s.items = text.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 4).map((l, k) => {
+                const [name, domain] = withDomain ? l.split("|").map((x) => x.trim()) : [l, ""];
+                const it = { text: name };
+                if (old[k] && old[k].at != null) it.at = old[k].at;
+                if (domain) it.domain = domain;
+                return it;
+              });
+            };
+            if (vt === "diagram") {
+              card.appendChild(field("Title (optional)", s.headline, 1, (v) => { s.headline = v; }));
+              card.appendChild(field("Boxes, in order (one per line, up to 4)", lines(s.items), 4, (v) => toItems(v)));
+            } else if (vt === "text") {
+              card.appendChild(field("Big text", s.headline, 1, (v) => { s.headline = v; }));
+              card.appendChild(field("Lines under it (one per line, optional)", lines(s.items), 2, (v) => toItems(v)));
+            } else if (vt === "logo") {
+              card.appendChild(field("Title (optional)", s.headline, 1, (v) => { s.headline = v; }));
+              card.appendChild(field("Logos (one per line: Name | website)", lines(s.items, true), 3, (v) => toItems(v, true)));
+            } else if (vt === "photo" || vt === "video") {
+              card.appendChild(field("Picture (image prompt)", s.visual, 3, (v) => { s.visual = v; }));
+              if (vt === "video") card.appendChild(field("Motion", s.motion, 2, (v) => { s.motion = v; }));
+            }
+          } else {
+            card.appendChild(field(normal ? "Shows (image prompt)" : "Top half shows (image prompt)",
+              s.visual, 3, (v) => { s.visual = v; }));
+            card.appendChild(field("Motion", s.motion, 2, (v) => { s.motion = v; }));
+          }
+          if (recorded && i > 0) {
+            const at = document.createElement("label");
+            at.className = "plan-field plan-seconds";
+            at.innerHTML = `<span>Starts at (seconds)</span>`;
+            const num = document.createElement("input");
+            num.type = "number";
+            num.min = "1";
+            num.max = String(Math.floor(recEnd));
+            num.step = "0.5";
+            num.className = "schedule-input";
+            num.value = String(+s.start_sec || 0);
+            num.addEventListener("input", () => { s.start_sec = +num.value || 0; refreshTimes(); });
+            at.appendChild(num);
+            card.appendChild(at);
+          }
           if (normal) {
             card.appendChild(field("Text on screen", s.caption, 1, (v) => { s.caption = v; }));
             const len = document.createElement("label");
@@ -1412,6 +1570,13 @@
       const actions = document.createElement("div");
       actions.className = "msg-actions";
       actions.appendChild(makeButton("+ Add clip", false, () => {
+        if (recorded) {  // splits the last clip in half
+          const last = +scenes[scenes.length - 1].start_sec || 0;
+          scenes.push({ spoken: "", visual_type: "none", items: [], visual: "", motion: "",
+                        start_sec: Math.round((last + (recEnd - last) / 2) * 2) / 2 });
+          render();
+          return;
+        }
         scenes.push(normal ? { caption: "", visual: "", motion: "", seconds: 5 } : { spoken: "", visual: "", motion: "" });
         render();
       }));
@@ -1422,7 +1587,7 @@
           const res = await fetch(`/api/v1/studio/jobs/${jobId}/plan`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scenes }),
+            body: JSON.stringify(recorded ? { scenes, style: style.value } : { scenes }),
           });
           const out = await res.json();
           if (!res.ok) throw new Error(out.detail || res.status);
@@ -1435,6 +1600,17 @@
       }));
       actions.appendChild(makeButton("Close", false, () => el.remove()));
       render();
+      // Recorded Vid: one look for every AI picture of the video, so the visuals belong together
+      const style = document.createElement("textarea");
+      if (recorded) {
+        const wrap = document.createElement("label");
+        wrap.className = "plan-field";
+        wrap.innerHTML = `<span>Look of every AI picture in this video${plan.topic ? ` (topic: ${escapeHtml(plan.topic)})` : ""}</span>`;
+        style.rows = 2;
+        style.value = plan.style || "";
+        wrap.appendChild(style);
+        el.appendChild(wrap);
+      }
       el.appendChild(list);
       el.appendChild(totalLine);
       el.appendChild(actions);
@@ -1516,6 +1692,7 @@
   }
 
   function estimateLine(est) {
+    if (est.type === "recorded") return `Ready to render · about ₹${est.total_inr ?? est.total_usd} (AI pictures and video clips only; diagrams, text and logos are free)`;
     if (est.total_inr != null) {
       if (est.type === "normal") return `Ready to render · about ₹${est.total_inr} (images + video clips, no HeyGen)`;
       return `Ready to render · about ₹${est.total_inr} (HeyGen ₹${est.heygen_inr} + top half ₹${est.content_inr})`;
@@ -1805,10 +1982,11 @@
           statusMsg().textContent = estimateLine(job.estimate || {});
           if (!box.querySelector(".video-job-actions")) {
             const normal = job.video_type === "normal";
-            const avatars = normal ? null : buildAvatarPicker();
+            const noHeygen = normal || job.video_type === "recorded"; // his own video: no avatar, no cloned voice
+            const avatars = noHeygen ? null : buildAvatarPicker();
             let voicePanel = null;
             // Another voice picked: the old preview no longer matches, so he hears the new one first.
-            const voices = normal ? null : buildVoicePicker(() => { if (voicePanel) voicePanel.reset(); }, job.voice_id);
+            const voices = noHeygen ? null : buildVoicePicker(() => { if (voicePanel) voicePanel.reset(); }, job.voice_id);
             const musicPick = normal ? buildMusicPicker(["royalty_free"]) : null;
             if (avatars) box.appendChild(avatars.el);
             if (voices) box.appendChild(voices.el);
@@ -1856,7 +2034,7 @@
             row.appendChild(go);
             row.appendChild(edit);
             row.appendChild(cancel);
-            if (!normal) {  // the voice preview is optional: Render is always available
+            if (!noHeygen) {  // the voice preview is optional: Render is always available
               voicePanel = buildVoicePreview(jobId, job.voice, (ready, failed, est) => {
                 go.disabled = false;
                 go.textContent = "Render video";
@@ -2043,10 +2221,10 @@
       .replace(/^(\W{0,3}\s*)\*\*([^*\n]{1,40}:)\*\*/gm, "$1<strong>$2</strong>")
       .replace(/\*\*(.*?)\*\*/g, "$1")
       // Video plan colours: clip heading (accent) + time (muted), labels (soft blue), hook label (accent)
-      .replace(/^<strong>(Clip \d+) \(([^)\n]+)\)<\/strong>/gm, '<strong class="md-accent">$1</strong> <span class="plan-muted">$2</span>')
-      .replace(/^(Says|Top shows|Shows|Text on screen|Hook|Why it worked|Your angle):/gm, '<span class="plan-label">$1:</span>')
+      .replace(/^<strong>(Clip \d+|Hook) \(([^)\n]+)\)<\/strong>/gm, '<strong class="md-accent">$1</strong> <span class="plan-muted">$2</span>')
+      .replace(/^(Says|Meaning|Visual|Why|Top shows|Shows|Text on screen|Hook|Why it worked|Your angle):/gm, '<span class="plan-label">$1:</span>')
       .replace(/^<strong>Hook:<\/strong>/gm, '<strong class="md-accent">Hook:</strong>')
-      .replace(/^((?:Top half|No avatar): [^\n]+)$/gm, '<span class="plan-muted">$1</span>')
+      .replace(/^((?:Top half|No avatar|Visuals): [^\n]+)$/gm, '<span class="plan-muted">$1</span>')
       .replace(/\*(.*?)\*/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/(?:^|\n)\s*---\s*(?:\n|$)/g, '<hr class="news-divider">')

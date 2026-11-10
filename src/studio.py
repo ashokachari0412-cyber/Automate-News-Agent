@@ -257,24 +257,33 @@ ENGINE_NAMES = {"avatar_iii": "Avatar III", "avatar_iv": "Avatar IV", "avatar_v"
 
 def estimate_cost(plan: Dict[str, Any]) -> Dict[str, Any]:
     """Per clip, as billed: one image each, and Wan bills whole seconds (a clone clip is rendered 1 s longer
-    than its line). A normal video has no HeyGen part and always uses Wan."""
+    than its line). A normal video has no HeyGen part and always uses Wan. A recorded video pays only for its
+    photo clips (an image) and video clips (an image + Wan); diagrams, text, logos and his face are free."""
     import math
     secs = max(1, plan.get("duration_sec", 40))
     normal = plan.get("type") == "normal"
+    recorded = plan.get("type") == "recorded"
     hg_engine, top = heygen_env()["engine"], video_env()
     engine = "wan" if normal else top["engine"]
-    heygen = 0.0 if normal else round(HEYGEN_PER_MIN.get(hg_engine, 1.0) * secs / 60, 2)
-    clip_secs = [max(2, min(15, math.ceil(float(s["seconds"]) if normal else
-                                          len(s["spoken"].split()) / WORDS_PER_SECOND + 1)))
-                 for s in plan["scenes"]]
+    heygen = 0.0 if normal or recorded else round(HEYGEN_PER_MIN.get(hg_engine, 1.0) * secs / 60, 2)
+    if recorded:
+        kinds = [visual_type(s) for s in plan["scenes"]]
+        images = sum(1 for k in kinds if k in ("photo", "video"))
+        clip_secs = [max(2, min(15, math.ceil(float(s["seconds"]) + 0.5)))
+                     for s, k in zip(plan["scenes"], kinds) if k == "video"]
+    else:
+        clip_secs = [max(2, min(15, math.ceil(float(s["seconds"]) if normal
+                                              else len(s["spoken"].split()) / WORDS_PER_SECOND + 1)))
+                     for s in plan["scenes"]]
+        images = len(clip_secs)
     rate = {"omni_flash": OMNI_PER_SEC.get(top["resolution"], 0.10),
             "wan": WAN_PER_SEC.get(top["resolution"], 0.025)}.get(engine, 0.0)
     from src.video.slide_visuals import image_price
-    content = round(rate * sum(clip_secs) + image_price() * len(clip_secs), 2)
+    content = round(rate * sum(clip_secs) + image_price() * images, 2)
     fx = costs.inr_rate()  # he reads costs in rupees
     return {"heygen_usd": heygen, "content_usd": content, "total_usd": round(heygen + content, 2),
             "heygen_inr": round(heygen * fx), "content_inr": round(content * fx), "total_inr": round((heygen + content) * fx),
-            "heygen_engine": None if normal else hg_engine, "top_engine": engine,
+            "heygen_engine": None if normal or recorded else hg_engine, "top_engine": engine,
             "top_resolution": top["resolution"], "seconds": secs, "type": plan.get("type", "clone")}
 
 
@@ -453,6 +462,8 @@ DEFAULT_MOTION = "Slow cinematic push-in with subtle natural movement"
 def retime(plan: Dict[str, Any]) -> Dict[str, Any]:
     """Start/end of every clip and the total length. Clone: from the words (his pace; synced to his real voice
     after HeyGen renders). Normal: each clip's own seconds (whole seconds, 2-15, what Wan renders)."""
+    if plan.get("type") == "recorded":
+        return _retime_recorded(plan)
     t = 0.0
     for s in plan["scenes"]:
         if plan.get("type") == "normal":
@@ -659,6 +670,9 @@ def clean_scenes(plan_type: str, scenes: List[Dict[str, Any]]) -> List[Dict[str,
         if not isinstance(s, dict):
             continue
         visual = " ".join(str(s.get("visual") or "").split())
+        if plan_type == "recorded":
+            out.append(recorded_scene(s, i, strict=True))
+            continue
         if plan_type == "normal":
             if not visual:
                 raise ValueError(f"Clip {i}: describe what it shows")
@@ -684,6 +698,34 @@ def clean_scenes(plan_type: str, scenes: List[Dict[str, Any]]) -> List[Dict[str,
 
 
 def plan_markdown(plan: Dict[str, Any]) -> str:
+    if plan.get("type") == "recorded":
+        lines = [f"**{plan['title']}** (9:16, about {plan['duration_sec']}s)", "",
+                 f"**What I understood:** {plan.get('summary', '')}", ""]
+        if plan.get("topic") or plan.get("style"):
+            lines += [f"**One topic, one look:** {plan.get('topic', '')} · {plan.get('style', '')}", ""]
+        lines.append("**Transcript (Telugu):**")
+        lines += [f"- {_fmt(float(seg.get('start') or 0))} · {seg.get('text', '')}" for seg in plan.get("transcript", [])]
+        kinds = [visual_type(s) for s in plan["scenes"]]
+        n_vis = sum(1 for k in kinds if k != "none")
+        lines += ["", f"Visuals: {n_vis} of {len(plan['scenes'])} clips show one in a floating window at the top; "
+                      "the rest is just you, full screen", ""]
+        for i, (s, vt) in enumerate(zip(plan["scenes"], kinds), 1):
+            lines.append(f"**Clip {i} ({s['start']}-{s['end']})**")
+            if s.get("spoken"):
+                lines.append(f"Says: \"{s['spoken']}\"")
+            if s.get("meaning"):
+                lines.append(f"Meaning: {s['meaning']}")
+            lines.append(f"Visual: {VISUAL_LABELS[vt]}")
+            if vt in DRAWN_TYPES:
+                items = [it["text"] for it in s.get("items", [])]
+                body = " → ".join(items) if vt == "diagram" else " · ".join(items)
+                lines.append(f"Shows: {s['headline'] + ': ' if s.get('headline') and items else s.get('headline', '')}{body}")
+            elif vt != "none":
+                lines.append(f"Shows: {s.get('on_screen') or s['visual']}")
+            if s.get("why"):
+                lines.append(f"Why: {s['why']}")
+            lines.append("")
+        return "\n".join(lines).strip()
     if plan.get("type") == "normal":
         lines = [f"**{plan['title']}** (9:16 full-screen AI video, about {plan['duration_sec']}s)", "",
                  "No avatar: every clip is generated by the video model (Wan 2.6 Flash)", ""]
@@ -863,6 +905,8 @@ Return ONLY JSON: {{"caption": "<the caption>"}}"""
 
 def _plan_text(plan: Dict[str, Any]) -> str:
     """What the video says: his spoken lines, or (normal video) the on-screen text and what the clips show."""
+    if plan.get("type") == "recorded":  # his Telugu words + what they mean, so the caption gets it right
+        return (plan.get("summary", "") + " " + " ".join(s.get("spoken", "") for s in plan["scenes"])).strip()
     return " ".join(s.get("spoken") or s.get("caption") or s.get("on_screen") or "" for s in plan["scenes"]).strip()
 
 
@@ -899,7 +943,10 @@ def update_job(job: Dict[str, Any], **fields: Any) -> None:
 # The app shows the % and a playful word for the current stage (imagining, animating, recording, ...).
 def _progress(job: Dict[str, Any], stage: Optional[str] = None, **parts: float) -> None:
     job.update({f"_{k}": v for k, v in parts.items()})
-    pct = 2 + 33 * job.get("_top", 0) + 50 * job.get("_hg", 0) + 15 * job.get("_post", 0)
+    if job.get("video_type") == "recorded":  # no HeyGen: the top half is most of the work
+        pct = 2 + 80 * job.get("_top", 0) + 18 * job.get("_post", 0)
+    else:
+        pct = 2 + 33 * job.get("_top", 0) + 50 * job.get("_hg", 0) + 15 * job.get("_post", 0)
     job["progress"] = max(job.get("progress", 0), min(99, int(pct)))
     if stage:
         job["stage"] = stage
@@ -947,16 +994,21 @@ async def _heygen_take(client: httpx.AsyncClient, hg: Dict[str, Any], script: st
     raise RuntimeError("HeyGen is still rendering after 60 minutes; check the HeyGen dashboard")
 
 
-async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
+async def _content_sources(job: Dict[str, Any], aspect: Any = "1:1",
+                           skip: Optional[set] = None) -> List[Optional[Dict[str, Any]]]:
     """Per scene: a square 1:1 image (the top part is about 1080x1126, so nothing important is cropped), then a content clip from the top engine (or just the image for the free zoom)."""
     from src.video import split_video
     plan, top = job["plan"], video_env()
-    sources: List[Dict[str, Any]] = []
+    sources: List[Optional[Dict[str, Any]]] = []
     n = len(plan["scenes"])
     for i, sc in enumerate(plan["scenes"], 1):
+        if skip and i - 1 in skip:  # only his face shows here: no image or clip needed
+            sources.append(None)
+            continue
         job["message"] = f"Creating image {i} of {len(plan['scenes'])} for the top half..."
         _progress(job, "imagining", top=(i - 1) / n)
-        img = await asyncio.to_thread(_render_image, sc["visual"], "1:1", STUDIO_DIR / f"{job['id']}_scene{i}.png",
+        img = await asyncio.to_thread(_render_image, sc["visual"], aspect[i - 1] if isinstance(aspect, list) else aspect,
+                                      STUDIO_DIR / f"{job['id']}_scene{i}.png",
                                       f"clip {i} image")
         if not img:
             raise RuntimeError(f"GPT Image 2.5 failed for clip {i}")
@@ -966,7 +1018,8 @@ async def _content_sources(job: Dict[str, Any]) -> List[Dict[str, Any]]:
         if top["engine"] == "wan":
             job["message"] = f"Animating clip {i} of {len(plan['scenes'])} with Wan 2.6 Flash..."
             _save_job(job)
-            seconds = len(sc["spoken"].split()) / WORDS_PER_SECOND + 1  # a little longer than the line; trimmed later
+            seconds = (sc["seconds"] + 0.5 if plan.get("type") == "recorded"  # his clip length, a little longer
+                       else len(sc["spoken"].split()) / WORDS_PER_SECOND + 1)  # a little longer than the line; trimmed later
             try:
                 clip = await asyncio.to_thread(split_video.wan_clip, img, f"{sc.get('motion', '')}. {sc['visual']}",
                                                seconds, STUDIO_DIR / f"{job['id']}_clip{i}.mp4", top["resolution"])
@@ -1000,7 +1053,7 @@ async def _build(job_id: str) -> None:
     job = _load_jobs()[job_id]
     ledger = costs.start()
     try:
-        make = _make_normal if job["plan"].get("type") == "normal" else _make_clone
+        make = {"normal": _make_normal, "recorded": _make_recorded}.get(job["plan"].get("type"), _make_clone)
         name, total = await make(job)
         caption = await make_caption(job["plan"], job.get("news_id"))  # editable in the app before posting
         job["caption"] = music.with_credit(caption, music.find(job.get("music_id")))
@@ -1144,6 +1197,288 @@ async def _make_clone(job: Dict[str, Any]) -> tuple:
             avatar_task.cancel()
 
 
+# ----------------------------------------------------------------------------- his own recording (Telugu)
+# "Recorded Vid": he records himself on the phone (usually Telugu); Gemini listens, writes the transcript and what
+# it understood, and picks ONE kind of visual per part of his speech. Two looks only: just him full screen (no
+# visual), or him with a floating window over the top 40% showing the visual. Nothing paid runs until he taps Render.
+VISUAL_TYPES = ("none", "diagram", "text", "logo", "photo", "video")
+VISUAL_LABELS = {"none": "Just you", "diagram": "Diagram (free)", "text": "Text (free)", "logo": "Logos (free)",
+                 "photo": "Motion photo", "video": "AI video"}
+DRAWN_TYPES = ("diagram", "text", "logo")       # drawn and animated on this PC: free
+RECORDED_PROMPT = """You are the video editor for Master Ashok (@ashok_a.i), an AI/tech creator. The video is him
+talking to his phone's front camera, mostly in Telugu (often with English tech words). It is {secs:.1f} seconds long.
+Watch it and listen to it.
+The final 9:16 video has two looks: (a) only him, full screen; (b) him in the lower part with a floating window over
+the top 40% of the screen that shows a visual about what he is saying right then.
+
+1. Transcribe exactly what he says, in Telugu script (keep the English words he says in English), as timed
+   segments of one sentence or phrase each.
+2. Say in 2-3 short, simple English sentences what he is talking about: the update or news, and his point.
+3. topic: one English line naming the single subject of the whole video (the product / company / news story).
+   style: one English line for the look of every AI image in this video (palette, lighting, mood), e.g. "dark
+   navy and warm amber, soft studio light, clean modern tech look". All visuals of this video belong to ONE topic
+   and ONE look: never show anything unrelated to the topic, never generic stock filler.
+4. Split the whole video into {n_min}-{n_max} back-to-back clips that follow his speech (cut where his point
+   changes; each clip 3-10 s; the first starts at 0, the last ends at {secs:.1f}).
+5. Per clip pick the ONE visual type that helps the viewer most at that moment:
+   - "none": only his face. Use for greetings, the opening line where he talks to the camera, talking about
+     himself, personal stories, feelings, opinions, jokes, questions to the audience, "follow/comment" lines,
+     short transitions, and when he already shows the thing on camera. The first clip is usually "none".
+   - "diagram": how something works, a process, steps, cause -> effect, before -> after. 2-4 boxes joined by
+     arrows; each box max 5 words.
+   - "text": a key number or statistic, a product or feature name, a key term, or a short punchline worth
+     reading. headline max 5 words (put the number first if there is one, e.g. "31% fewer tokens"); up to 2
+     short lines under it.
+   - "logo": he names companies, products or apps with a well-known logo (1-3 of them).
+   - "photo": a concrete thing, place, device or scene best shown as a still picture (slow zoom on it).
+   - "video": only when motion itself matters (something moving, an action, an event happening). Costs the most:
+     at most 2 per video.
+   Prefer "diagram", "text" and "logo" (free) whenever they explain the point as well as a picture would.
+   Avoid the same visual type more than twice in a row.
+6. Fields per clip:
+   start (seconds), telugu (his words in it), meaning (one short English line), visual_type, why (one short English
+   reason for the choice), on_screen (one short English line: what the viewer sees),
+   headline: diagram title (optional, max 5 words) / the text's big headline / logos title (optional, e.g.
+     "Built by"); empty for photo, video and none,
+   items: diagram boxes / lines under the text / logos, in the order he says them; each {{"text": "<English, max 5
+     words>", "at": <second in the video when he says it>}}; a logo item also has "domain" (the brand's official
+     website, e.g. "microsoft.com"); empty for photo, video and none,
+   visual: for photo and video only, a 40-70 word photorealistic prompt for a landscape 4:3 image that shows what
+     he is saying right then, about the video's topic, in the video's style; centred subject, cinematic light; NO
+     text, letters, logos or real people's faces in the image,
+   motion: for video only, one line of camera/subject motion for an image-to-video model.
+Return ONLY JSON: {{"title": "<English title, max 8 words>", "summary": "<2-3 sentences>", "topic": "...",
+"style": "...", "transcript": [{{"start": 0.0, "end": 3.2, "text": "<Telugu>"}}],
+"clips": [{{"start": 0.0, "telugu": "...", "meaning": "...", "visual_type": "none", "why": "...", "on_screen": "...",
+"headline": "", "items": [], "visual": "", "motion": ""}}]}}"""
+RECORDED_MODELS = [SCRIPT_MODEL, "gemini-3-flash-preview"]  # listening to Telugu needs the stronger models
+
+
+def _gemini_media_json(media: bytes, mime: str, prompt: str) -> Dict[str, Any]:
+    """Gemini watches/listens to the media and answers in JSON (stronger models first, then the usual fallbacks)."""
+    from google.genai import types
+    from src.llm.client import available_models, note_model_error
+    if not _llm._client:
+        raise RuntimeError("GEMINI_API_KEY is not set in .env")
+    models = list(dict.fromkeys(m for m in RECORDED_MODELS + [settings.GEMINI_MODEL, "gemini-3.1-flash-lite"] if m))
+    last: Optional[Exception] = None
+    for m in available_models(models):
+        try:
+            r = _llm._client.models.generate_content(
+                model=m, contents=[types.Part.from_bytes(data=media, mime_type=mime), prompt],
+                config={"response_mime_type": "application/json", "temperature": 0.2})
+            if r.text:
+                return _llm._extract_json(r.text)
+        except Exception as e:
+            last = e
+            note_model_error(m, e)
+            logger.warning(f"Gemini {m} couldn't read the recording: {e}")
+    raise last or RuntimeError("Gemini returned nothing for the recording")
+
+
+def _retime_recorded(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Clips follow his real speech: each lasts until the next one starts; the first starts at 0 and the last ends
+    with his recording. Start times are kept in order and at least 1 s apart."""
+    total = float(plan["recording_sec"])
+    scenes = sorted(plan["scenes"], key=lambda s: float(s.get("start_sec") or 0))
+    starts, prev = [], -1.0
+    for i, s in enumerate(scenes):
+        st = 0.0 if i == 0 else min(max(float(s.get("start_sec") or 0), prev + 1.0), total - 1.0)
+        starts.append(round(st, 2))
+        prev = st
+    for i, s in enumerate(scenes):
+        end = starts[i + 1] if i + 1 < len(scenes) else total
+        s["start_sec"], s["seconds"] = starts[i], round(end - starts[i], 2)
+        s["start"], s["end"] = _fmt(starts[i]), _fmt(end)
+    plan["scenes"] = scenes
+    plan["duration_sec"] = round(total)
+    return plan
+
+
+def visual_type(scene: Dict[str, Any]) -> str:
+    """The clip's visual type (older plans only had needs_visual: those were AI image -> video clips)."""
+    t = str(scene.get("visual_type") or "").lower()
+    if t in VISUAL_TYPES:
+        return t
+    return "video" if scene.get("needs_visual", True) else "none"
+
+
+def _clean_items(items: Any, with_domain: bool) -> List[Dict[str, Any]]:
+    out = []
+    for it in items if isinstance(items, list) else []:
+        if isinstance(it, str):
+            it = {"text": it}
+        if not isinstance(it, dict):
+            continue
+        text = " ".join(str(it.get("text") or "").split())[:60]
+        if not text:
+            continue
+        item: Dict[str, Any] = {"text": text}
+        try:
+            item["at"] = round(float(it["at"]), 2)
+        except (KeyError, TypeError, ValueError):
+            pass
+        if with_domain and str(it.get("domain") or "").strip():
+            item["domain"] = str(it["domain"]).strip().lower()[:80]
+        out.append(item)
+    return out[:4]
+
+
+def recorded_scene(c: Dict[str, Any], i: int = 1, strict: bool = False) -> Dict[str, Any]:
+    """One clip of his recording, from Gemini's answer or his edits. strict (his edits) raises ValueError when a
+    picked visual has nothing to show."""
+    vt = visual_type(c)
+    one = lambda k: " ".join(str(c.get(k) or "").split())  # noqa: E731
+    try:
+        start = float(c.get("start_sec", c.get("start")) or 0)
+    except (TypeError, ValueError):
+        raise ValueError(f"Clip {i}: the start must be a number of seconds")
+    s = {"spoken": one("spoken") or one("telugu"), "meaning": one("meaning"), "why": one("why"),
+         "on_screen": one("on_screen"), "visual_type": vt, "headline": one("headline")[:60],
+         "items": _clean_items(c.get("items"), vt == "logo") if vt in DRAWN_TYPES else [],
+         "visual": one("visual") if vt in ("photo", "video") else "",
+         "motion": (one("motion") or DEFAULT_MOTION) if vt == "video" else "", "start_sec": start}
+    s["needs_visual"] = vt != "none"
+    if vt in ("photo", "video") and not s["visual"]:
+        if strict:
+            raise ValueError(f"Clip {i}: describe the picture, or pick another visual")
+        s["visual"] = f"Photorealistic image about: {s['meaning'] or s['spoken']}"
+    if vt == "text" and not s["headline"]:
+        if strict:
+            raise ValueError(f"Clip {i}: write the text to show")
+        s["headline"] = (s["items"].pop(0)["text"] if s["items"] else s["meaning"][:40]) or "..."
+    if vt in ("diagram", "logo") and not s["items"]:
+        if strict:
+            raise ValueError(f"Clip {i}: add at least one {'box' if vt == 'diagram' else 'logo'}")
+        s["items"] = [{"text": s["headline"] or s["meaning"][:40] or "..."}]
+    return s
+
+
+async def start_recorded_job(upload: Path) -> Dict[str, Any]:
+    """His uploaded video -> cleaned copy, Telugu transcript, what Alfred understood and a visual per clip.
+    The job waits for Render (nothing paid yet; listening with Gemini costs a fraction of a rupee)."""
+    from src import progress
+    from src.video import split_video as sv
+    job_id = uuid.uuid4().hex[:12]
+    rec = STUDIO_DIR / f"{job_id}_rec.mp4"
+    progress.report("Preparing your video (upright, 25 fps, voice levelled)...")
+    await asyncio.to_thread(sv.prepare_recording, upload, rec)
+    plan = await plan_recording(rec)
+    job = await start_video_job(plan)
+    update_job(job, recording=rec.name)
+    return job
+
+
+async def plan_recording(rec: Path) -> Dict[str, Any]:
+    """Gemini watches his (cleaned) recording: transcript, summary, one topic and look, and a visual per clip."""
+    from src import progress
+    from src.video import split_video as sv
+    secs = sv.media_duration(rec)
+    if secs < 3:
+        raise ValueError("The video is shorter than 3 seconds")
+    # small copy for Gemini: 360p, 2 frames/s, mono voice (~1-2 MB a minute; Gemini looks at ~1 frame/s anyway)
+    small = rec.with_name(rec.stem + "_small.mp4")
+    await asyncio.to_thread(sv._run, ["-i", str(rec), "-vf", "scale=-2:360,fps=2", "-c:v", "libx264", "-preset",
+                                      "veryfast", "-crf", "32", "-c:a", "aac", "-b:a", "48k", "-ac", "1", str(small)])
+    progress.report("Watching and listening to your video (Telugu transcript)...")
+    n_min, n_max = max(2, round(secs / 9)), max(3, round(secs / 4))
+    try:
+        data = await asyncio.to_thread(_gemini_media_json, small.read_bytes(), "video/mp4",
+                                       RECORDED_PROMPT.format(secs=secs, n_min=n_min, n_max=n_max))
+    finally:
+        small.unlink(missing_ok=True)
+    progress.report("Picking a visual for each part...")
+    clips = [c for c in data.get("clips") or [] if isinstance(c, dict)]
+    if not clips:
+        raise RuntimeError("Gemini didn't return any clips for the video")
+    scenes = [recorded_scene(c, i) for i, c in enumerate(clips[:15], 1)]
+    transcript = [{"start": float(s.get("start") or 0), "end": float(s.get("end") or 0),
+                   "text": " ".join(str(s.get("text") or "").split())}
+                  for s in data.get("transcript") or [] if isinstance(s, dict) and s.get("text")]
+    return _retime_recorded({"type": "recorded", "title": str(data.get("title") or "My video")[:100],
+                             "summary": str(data.get("summary") or ""),
+                             "topic": " ".join(str(data.get("topic") or "").split())[:200],
+                             "style": " ".join(str(data.get("style") or "").split())[:200],
+                             "transcript": transcript, "recording_sec": round(secs, 2), "scenes": scenes})
+
+
+def _recorded_prompt(plan: Dict[str, Any], scene: Dict[str, Any]) -> str:
+    """The clip's picture prompt tied to the whole video: same topic, same look in every image."""
+    parts = [scene["visual"]]
+    if plan.get("style"):
+        parts.append(f"Visual style shared by every image of this video: {plan['style']}")
+    if plan.get("topic"):
+        parts.append(f"This image is part of one video about: {plan['topic']}. Show only things related to it")
+    return ". ".join(p.rstrip(". ") for p in parts) + "."
+
+
+async def _make_recorded(job: Dict[str, Any]) -> tuple:
+    """His recording + one visual per clip that needs one: diagram / text / logo drawn here (free), photo = AI image
+    with a slow zoom, video = AI image -> Wan clip (free zoom if Wan fails). Clips with a visual show it in the
+    floating window over the top 40%, the rest show only him (split_video.compose_recorded)."""
+    from src.video import recorded_visuals, split_video
+    job_id, plan = job["id"], job["plan"]
+    scenes = plan["scenes"]
+    durations = [float(s["seconds"]) for s in scenes]
+    size = (split_video.CARD_W, split_video.CARD_H)
+    todo = [i for i, s in enumerate(scenes) if visual_type(s) != "none"]
+    clips: List[Optional[Path]] = [None] * len(scenes)
+    engines: List[str] = []
+    top = video_env()
+    if todo:
+        job.update(status="rendering", message="Creating the visuals for your video...")
+        _progress(job, "imagining")
+    for n, i in enumerate(todo):
+        s, d, vt = scenes[i], durations[i], visual_type(scenes[i])
+        k = i + 1
+        job["message"] = f"Making visual {n + 1} of {len(todo)} ({vt})..."
+        _progress(job, "imagining", top=n / len(todo))
+        if vt in DRAWN_TYPES:
+            clips[i] = await asyncio.to_thread(recorded_visuals.render_visual, vt, s, d + 0.5, s["start_sec"], size,
+                                               STUDIO_DIR / f"{job_id}_{vt}{k}.mp4", STUDIO_DIR / "logos")
+            engines.append(vt)
+            continue
+        img = await asyncio.to_thread(_render_image, _recorded_prompt(plan, s), "4:3",
+                                      STUDIO_DIR / f"{job_id}_scene{k}.png", f"clip {k} image")
+        if not img:
+            raise RuntimeError(f"GPT Image 2.5 failed for clip {k}")
+        clip, engine = None, "kenburns"
+        if vt == "video" and top["engine"] in ("wan", "omni_flash"):
+            _progress(job, "animating", top=(n + 0.5) / len(todo))
+            prompt = f"{s.get('motion') or DEFAULT_MOTION}. {_recorded_prompt(plan, s)}"
+            try:
+                if top["engine"] == "wan":
+                    job["message"] = f"Animating clip {k} with Wan 2.6 Flash..."
+                    _save_job(job)
+                    clip = await asyncio.to_thread(split_video.wan_clip, img, prompt, d + 0.5,
+                                                   STUDIO_DIR / f"{job_id}_clip{k}.mp4", top["resolution"])
+                else:
+                    job["message"] = f"Animating clip {k} with Gemini Omni Flash..."
+                    _save_job(job)
+                    clip = await asyncio.to_thread(split_video.omni_clip, img, prompt,
+                                                   STUDIO_DIR / f"{job_id}_clip{k}.mp4", top["resolution"])
+                    secs = split_video.media_duration(clip)
+                    costs.record("Google Gemini", f"Video clip · Omni Flash {top['resolution']}, {secs:.0f}s",
+                                 OMNI_PER_SEC.get(top["resolution"], 0.10) * secs)
+                engine = top["engine"]
+            except Exception as e:  # no key / free seconds used up / error: keep going with the free zoom
+                logger.warning(f"{top['engine']} unavailable for clip {k}, using free zoom instead: {e}")
+        if clip is None:
+            clip = await asyncio.to_thread(split_video.kenburns_clip, img, d + 0.5,
+                                           STUDIO_DIR / f"{job_id}_kb{k}.mp4", k,
+                                           int(round(split_video.W * size[1] / size[0] / 2)) * 2)
+        clips[i] = clip
+        engines.append(engine)
+    job["top_engines"] = engines
+    job.update(status="rendering", message="Putting your video together...")
+    _progress(job, "stitching", top=1.0, post=0.3)
+    name = f"{job_id}.mp4"
+    _progress(job, "finishing", post=0.6)
+    await asyncio.to_thread(split_video.compose_recorded, clips, durations, STUDIO_DIR / job["recording"],
+                            STUDIO_DIR / name, STUDIO_DIR / f"{job_id}_work")
+    return name, sum(durations)
+
+
 # ----------------------------------------------------------------------------- voice preview
 # Optional: he can hear the picked voice BEFORE paying for the video (HeyGen TTS, one file per clip). It is only
 # a preview: on Render HeyGen speaks the script itself in that voice, so the lips stay in sync.
@@ -1251,7 +1586,8 @@ def get_plan(job_id: str) -> Optional[Dict[str, Any]]:
     return {"plan": job["plan"], "status": job["status"], "estimate": job.get("estimate")} if job else None
 
 
-def update_plan(job_id: str, scenes: List[Dict[str, Any]], title: Optional[str] = None) -> Dict[str, Any]:
+def update_plan(job_id: str, scenes: List[Dict[str, Any]], title: Optional[str] = None,
+                style: Optional[str] = None) -> Dict[str, Any]:
     """His edits to the clips (what he says / what's shown / clip length), only before Render.
     Timings and the cost estimate are recalculated. Raises KeyError / ValueError."""
     job = _load_jobs().get(job_id)
@@ -1263,7 +1599,9 @@ def update_plan(job_id: str, scenes: List[Dict[str, Any]], title: Optional[str] 
     plan["scenes"] = clean_scenes(plan.get("type", "clone"), scenes)
     if title and title.strip():
         plan["title"] = title.strip()[:100]
-    if plan.get("type") != "normal":
+    if style is not None and plan.get("type") == "recorded":
+        plan["style"] = " ".join(style.split())[:200]
+    if plan.get("type") not in ("normal", "recorded"):
         plan["hook"] = plan["scenes"][0]["spoken"]
     retime(plan)
     if job.get("voice") and [s.get("spoken") for s in plan["scenes"]] != [c["text"] for c in job["voice"]["clips"]]:
@@ -1288,6 +1626,8 @@ async def approve_job(job_id: str, avatar_id: Optional[str] = None, music_id: Op
                 job.pop("voice")  # the preview was another voice: HeyGen speaks the script in the picked voice
         if music_id:
             job["music_id"] = music_id
+        if job.get("video_type") == "recorded":
+            job["estimate"] = estimate_cost(job["plan"])
         job.update(status="queued", message="Starting...", approved=time.time(), progress=0, stage="starting")
         _save_job(job)
         _build_tasks[job_id] = asyncio.create_task(_build(job_id))

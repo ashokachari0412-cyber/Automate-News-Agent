@@ -16,7 +16,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Alfred" />
-  <link rel="stylesheet" href="styles.css?v=31" />
+  <link rel="stylesheet" href="styles.css?v=32" />
 </head>
 <body class="alfred-theme">
 
@@ -136,6 +136,11 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49"/></svg>
             <span class="lbl-full">AI Updates</span><span class="lbl-short">AI Updates</span>
           </button>
+          <button class="quick-chip" id="recorded-vid-btn" type="button" title="Upload your own video: Alfred adds visuals on top, you on the bottom">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m16 10 6-3v10l-6-3"/></svg>
+            <span class="lbl-full">Recorded Vid</span><span class="lbl-short">Rec Vid</span>
+          </button>
+          <input type="file" id="recorded-input" accept="video/*" hidden>
           <button class="quick-chip" id="content-monitor-btn" type="button" title="See what the creators you follow posted in the last 3 days">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
             <span class="lbl-full">Content-Monitor</span><span class="lbl-short">Monitor</span>
@@ -196,7 +201,7 @@
     <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
   </div>
 
-  <script src="app.js?v=33"></script>
+  <script src="app.js?v=34"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW registration failed:", e));

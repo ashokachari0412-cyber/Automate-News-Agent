@@ -417,6 +417,15 @@ def _clone_filter(avatar: Path, bot_h: int) -> str:
     return chain + f",crop={W}:{bot_h}:{crop_x}:{crop_y}"
 
 
+# ----------------------------------------------------------------------------- his own recording
+def prepare_recording(src: Path, out: Path) -> Path:
+    """His phone video -> upright (rotation applied), 25 fps, voice cleaned of rumble and levelled for Reels/Shorts."""
+    _run(["-i", str(src), "-vf", f"fps={FPS},setsar=1", "-af", "highpass=f=80,loudnorm=I=-14:TP=-1.5:LRA=11",
+          "-c:v", "libx264", "-preset", "fast", "-crf", "17", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", str(out)])
+    return out
+
+
 # ----------------------------------------------------------------------------- subtitles
 def _font(size: int) -> ImageFont.FreeTypeFont:
     for f in FONT_PATHS:
@@ -600,7 +609,8 @@ def compose(top_clips: List[Path], durations: List[float], avatar: Path, out: Pa
     f.append(f"[{itm}:v]format=gray,trim=duration={total:.3f}[mt]")
     f.append("[topraw]format=rgba[topa];[topa][mt]alphamerge[top]")
     # Clone: his face centred, head + shoulders, hair clear of the cross-fade (see _clone_filter).
-    f.append(f"[{ia}:v]{_clone_filter(avatar, bot_h)},setsar=1,fps={FPS},format=rgba[bot0]")
+    bottom = _clone_filter(avatar, bot_h)
+    f.append(f"[{ia}:v]{bottom},setsar=1,fps={FPS},format=rgba[bot0]")
     f.append(f"[{ibm}:v]format=gray,vflip,trim=duration={total:.3f}[mb]")
     f.append("[bot0][mb]alphamerge[bot]")
     f.append(f"color=c=black:s={W}x{H}:r={FPS}:d={total:.3f},format=rgba[bg]")
@@ -613,4 +623,142 @@ def compose(top_clips: List[Path], durations: List[float], avatar: Path, out: Pa
     _run([*args, "-filter_complex", ";".join(f), "-map", "[v]", "-map", f"{ia}:a?",
           "-t", f"{total:.3f}", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
           "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)])
+    return out
+
+# ----------------------------------------------------------------------------- recorded video: two looks
+# face  : only him, full screen (no visual is made for the clip)
+# float : him full screen, his face moved down below a floating window (rounded, soft shadow) that fills the top
+#         40% of the frame with a small margin and shows the clip's visual
+CARD_PAD = 32                          # px margin around the floating window (top, left, right)
+CARD_W, CARD_H = W - 2 * CARD_PAD, round(H * 0.40)
+CARD_R = 34                            # corner radius
+CARD_SHADOW = 26                       # px of soft shadow around the window
+FACE_FEATHER = 90                      # px soft edge where his moved-down video meets the blurred fill
+ENCODE = ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+
+
+def _video_size(path: Path) -> Tuple[int, int]:
+    import cv2
+    cap = cv2.VideoCapture(str(path))
+    size = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return size
+
+
+def _full_frame(rec: Path) -> Tuple[str, Optional[Tuple[float, float, float]]]:
+    """FFmpeg chain that fills the 9:16 frame with his recording (face centred left-right), and where his face
+    lands in that frame: (centre x, centre y, face height) or None."""
+    sw, sh = _video_size(rec)
+    face = _face_box(rec)
+    scale = max(W / sw, H / sh)
+    w, h = int(round(sw * scale / 2)) * 2, int(round(sh * scale / 2)) * 2
+    cx = (face[0] + face[2] / 2) * scale if face else w / 2
+    x, y = max(0, min(w - W, int(round(cx - W / 2)))), (h - H) // 2
+    chain = f"scale={w}:{h},crop={W}:{H}:{x}:{y},setsar=1,fps={FPS}"
+    if not face:
+        return chain, None
+    return chain, ((face[0] + face[2] / 2) * scale - x, (face[1] + face[3] / 2) * scale - y, face[3] * scale)
+
+
+def face_full_filter(rec: Path) -> str:
+    """His recording filling the whole 9:16 frame, his face centred left-right."""
+    return _full_frame(rec)[0]
+
+
+def _float_place(face: Optional[Tuple[float, float, float]]) -> Tuple[float, int, int]:
+    """(zoom, x, y) for his video under the floating window: his face centred in the space below the window,
+    hair clear of it; zoomed out only if his head would not fit there."""
+    below = CARD_PAD + CARD_H                    # first row under the window
+    room = H - below
+    cx, cy, fh = face or (W / 2, H * 0.38, H * 0.2)
+    zoom = min(1.0, 0.9 * room / (1.6 * fh))     # zoomed out only if hair-to-chin can't fit below the window
+    target = max(below + 20 + 0.85 * fh * zoom, below + room * 0.38)  # face centre: hair just under the window
+    y = int(round(target - cy * zoom))
+    x = 0 if zoom >= 1 else int(round(W / 2 - cx * zoom))
+    return zoom, x, max(0, y)
+
+
+def _feather_png(path: Path, w: int, h: int, sides: bool) -> Path:
+    """Alpha mask for his moved-down video: soft top edge (and soft sides when zoomed out)."""
+    import numpy as np
+    ys = np.clip(np.arange(h) / FACE_FEATHER, 0, 1)
+    mask = np.tile(ys[:, None], (1, w))
+    if sides:
+        xs = np.clip(np.minimum(np.arange(w), np.arange(w)[::-1]) / FACE_FEATHER, 0, 1)
+        mask = np.minimum(mask, np.tile(xs[None, :], (h, 1)))
+    Image.fromarray((mask * 255).astype("uint8"), "L").save(path)
+    return path
+
+
+def _card_pngs(work: Path) -> Tuple[Path, Path]:
+    """Rounded-corner mask for the floating window + its soft drop shadow (drawn 4x larger, then smoothed)."""
+    from PIL import ImageFilter
+    k = 4
+    mask = Image.new("L", (CARD_W * k, CARD_H * k), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, CARD_W * k - 1, CARD_H * k - 1), radius=CARD_R * k, fill=255)
+    pad = CARD_SHADOW
+    shadow = Image.new("RGBA", (CARD_W + 2 * pad, CARD_H + 2 * pad), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle((pad, pad + 8, pad + CARD_W, pad + CARD_H + 8), radius=CARD_R,
+                                             fill=(0, 0, 0, 170))
+    m, s = work / "card_mask.png", work / "card_shadow.png"
+    mask.resize((CARD_W, CARD_H), Image.LANCZOS).save(m)
+    shadow.filter(ImageFilter.GaussianBlur(pad / 2)).save(s)
+    return m, s
+
+
+def _card_track(clips: List[Optional[Path]], durations: List[float], work: Path) -> Path:
+    """The window's content for the whole video: each clip's visual cover-scaled to the window and cut to its
+    clip (looped if short); black where only his face shows. Frame counts are cumulative, so it stays in sync."""
+    cover = f"scale={CARD_W}:{CARD_H}:force_original_aspect_ratio=increase,crop={CARD_W}:{CARD_H},setsar=1,fps={FPS}"
+    segs, t = [], 0.0
+    for i, (clip, d) in enumerate(zip(clips, durations)):
+        frames = max(1, round((t + d) * FPS) - round(t * FPS))
+        t += d
+        seg = work / f"card{i}.mp4"
+        src = ["-stream_loop", "-1", "-i", str(clip)] if clip else \
+            ["-f", "lavfi", "-i", f"color=c=black:s={CARD_W}x{CARD_H}:r={FPS}"]
+        _run([*src, "-vf", cover, "-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "fast",
+              "-crf", "16", "-pix_fmt", "yuv420p", str(seg)])
+        segs.append(seg)
+    lst = work / "card.txt"
+    lst.write_text("".join(f"file '{s.as_posix()}'\n" for s in segs), encoding="utf-8")
+    out = work / "card.mp4"
+    _run(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(out)])
+    return out
+
+
+def compose_recorded(clips: List[Optional[Path]], durations: List[float], rec: Path, out: Path,
+                     work: Path) -> Path:
+    """His recording + the visuals in one pass. A clip with a visual (clips[i] set) shows the floating window
+    over the top 40% with him below it; a clip without one (None) shows only him, full screen. His own voice
+    runs underneath, untouched."""
+    work.mkdir(parents=True, exist_ok=True)
+    total = sum(durations)
+    full, face = _full_frame(rec)
+    spans, t = [], 0.0
+    for clip, d in zip(clips, durations):
+        if clip:
+            spans.append((round(t * FPS) / FPS, round((t + d) * FPS) / FPS))
+        t += d
+    if not spans:
+        _run(["-i", str(rec), "-vf", full, "-t", f"{total:.3f}", *ENCODE, str(out)])
+        return out
+    on = "+".join(f"between(t,{a:.3f},{b - 0.5 / FPS:.3f})" for a, b in spans)
+    zoom, fx, fy = _float_place(face)
+    fw, fh = int(round(W * zoom / 2)) * 2, int(round(H * zoom / 2)) * 2
+    feather = _feather_png(work / "face_feather.png", fw, fh, sides=zoom < 1)
+    card = _card_track(clips, durations, work)
+    mask, shadow = _card_pngs(work)
+    graph = (f"[0:v]{full},split=3[face][a][b];"
+             f"[a]boxblur=40:3,eq=brightness=-0.10[blur];"            # fill above / beside his moved-down video
+             f"[b]scale={fw}:{fh},format=rgba[m0];[2:v]format=gray[fm];[m0][fm]alphamerge[moved];"
+             f"[blur][moved]overlay={fx}:{fy}:format=auto[low];"
+             f"[face][low]overlay=0:0:enable='{on}'[base];"
+             f"[1:v]setpts=PTS-STARTPTS,format=rgba[c0];[3:v]format=gray[cm];[c0][cm]alphamerge[win];"
+             f"[base][4:v]overlay={CARD_PAD - CARD_SHADOW}:{CARD_PAD - CARD_SHADOW}:format=auto:enable='{on}'[s1];"
+             f"[s1][win]overlay={CARD_PAD}:{CARD_PAD}:format=auto:enable='{on}',format=yuv420p[v]")
+    _run(["-i", str(rec), "-i", str(card), "-loop", "1", "-i", str(feather), "-loop", "1", "-i", str(mask),
+          "-loop", "1", "-i", str(shadow), "-filter_complex", graph, "-map", "[v]", "-map", "0:a",
+          "-t", f"{total:.3f}", *ENCODE, str(out)])
     return out
